@@ -1,6 +1,38 @@
 import SwiftData
 import SwiftUI
 
+enum AttentionFeedSection: String, CaseIterable, Identifiable {
+    case stream
+    case pullRequests
+    case issues
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .stream:
+            return "Stream"
+        case .pullRequests:
+            return "Pull Requests"
+        case .issues:
+            return "Issues"
+        }
+    }
+
+    func includes(kind: AttentionKind, reasons: AttentionReason) -> Bool {
+        switch self {
+        case .stream:
+            return true
+        case .pullRequests:
+            let includedReasons: AttentionReason = [.reviewRequested, .mentioned, .authored]
+            return kind == .pullRequest && !reasons.intersection(includedReasons).isEmpty
+        case .issues:
+            let includedReasons: AttentionReason = [.assigned, .mentioned, .authored]
+            return kind == .issue && !reasons.intersection(includedReasons).isEmpty
+        }
+    }
+}
+
 struct MenuBarView: View {
     @Environment(AppController.self) private var controller
     @Query(sort: [
@@ -8,6 +40,7 @@ struct MenuBarView: View {
         SortDescriptor(\AttentionItem.repositoryName),
         SortDescriptor(\AttentionItem.number),
     ]) private var items: [AttentionItem]
+    @State private var selectedSection = AttentionFeedSection.stream
 
     var body: some View {
         VStack(spacing: 0) {
@@ -33,10 +66,10 @@ struct MenuBarView: View {
     private var header: some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Attention")
+                Text("I seek your Attention!")
                     .font(.headline)
                 if let date = controller.lastSuccessfulRefreshAt {
-                    Text("Updated \(date, style: .relative)")
+                    Text("Updated \(date, style: .relative) ago")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
@@ -65,18 +98,36 @@ struct MenuBarView: View {
     @ViewBuilder
     private var content: some View {
         if !items.isEmpty {
-            List(items) { item in
-                Button {
-                    if let url = item.url {
-                        controller.open(url)
+            VStack(spacing: 0) {
+                Picker("Feed", selection: $selectedSection) {
+                    ForEach(AttentionFeedSection.allCases) { section in
+                        Text(section.title).tag(section)
                     }
-                } label: {
-                    AttentionRow(item: item)
                 }
-                .buttonStyle(.plain)
-                .accessibilityHint("Opens on GitHub")
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+
+                Divider()
+
+                if filteredItems.isEmpty {
+                    emptySectionState
+                } else {
+                    List(filteredItems) { item in
+                        Button {
+                            if let url = item.url {
+                                controller.open(url)
+                            }
+                        } label: {
+                            AttentionRow(item: item)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Opens on GitHub")
+                    }
+                    .listStyle(.inset)
+                }
             }
-            .listStyle(.inset)
         } else if controller.isRefreshing {
             centeredState(icon: nil, title: "Checking GitHub…", detail: nil, showsProgress: true)
         } else {
@@ -103,6 +154,36 @@ struct MenuBarView: View {
                     detail: "Open issues and pull requests matching your attention rules will appear here."
                 )
             }
+        }
+    }
+
+    private var filteredItems: [AttentionItem] {
+        items.filter { item in
+            selectedSection.includes(kind: item.kind, reasons: item.reasons)
+        }
+    }
+
+    @ViewBuilder
+    private var emptySectionState: some View {
+        switch selectedSection {
+        case .stream:
+            centeredState(
+                icon: "checkmark.circle",
+                title: "Nothing needs your attention",
+                detail: nil
+            )
+        case .pullRequests:
+            centeredState(
+                icon: "arrow.triangle.pull",
+                title: "No pull requests need your attention",
+                detail: "Review requests, mentions, and pull requests authored by you appear here."
+            )
+        case .issues:
+            centeredState(
+                icon: "smallcircle.filled.circle",
+                title: "No issues need your attention",
+                detail: "Assigned, mentioned, and authored issues appear here."
+            )
         }
     }
 

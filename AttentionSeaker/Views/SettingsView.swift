@@ -92,7 +92,7 @@ struct SettingsView: View {
             LabeledContent("Interval") {
                 HStack(spacing: 8) {
                     TextField(
-                        "Minutes",
+                        "",
                         value: Binding(
                             get: { controller.refreshIntervalMinutes },
                             set: { controller.updateRefreshInterval($0) }
@@ -101,6 +101,7 @@ struct SettingsView: View {
                     )
                     .frame(width: 60)
                     .multilineTextAlignment(.trailing)
+                    .accessibilityLabel("Refresh interval in minutes")
                     Stepper(
                         "",
                         value: Binding(
@@ -112,6 +113,7 @@ struct SettingsView: View {
                     .labelsHidden()
                     Text("minutes")
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
             }
             Text("Refreshes at launch, on this interval while running, and when requested manually.")

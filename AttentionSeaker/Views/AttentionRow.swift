@@ -6,9 +6,9 @@ struct AttentionRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: item.kind == .pullRequest ? "arrow.triangle.pull" : "smallcircle.filled.circle")
-                .foregroundStyle(item.kind == .pullRequest ? .purple : .green)
+                .foregroundStyle(iconColor)
                 .frame(width: 18)
-                .accessibilityLabel(item.kind == .pullRequest ? "Pull request" : "Issue")
+                .accessibilityLabel(iconAccessibilityLabel)
 
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 4) {
@@ -46,6 +46,20 @@ struct AttentionRow: View {
         .padding(.vertical, 4)
     }
 
+    private var iconColor: Color {
+        if item.kind == .pullRequest {
+            return item.isDraft ? .gray : .green
+        }
+        return .green
+    }
+
+    private var iconAccessibilityLabel: String {
+        if item.kind == .pullRequest {
+            return item.isDraft ? "Draft pull request" : "Pull request"
+        }
+        return "Issue"
+    }
+
     private func color(for reason: AttentionReason) -> Color {
         switch reason {
         case .reviewRequested:
@@ -73,4 +87,3 @@ private struct ReasonBadge: View {
             .background(color.opacity(0.12), in: Capsule())
     }
 }
-
