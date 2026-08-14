@@ -17,6 +17,10 @@ struct GitHubCLIClientTests {
         let body = try #require(String(data: input, encoding: .utf8))
         #expect(body.contains("assignedIssues"))
         #expect(body.contains("review-requested:octocat"))
+        #expect(
+            GitHubCLIClient.nodeFields
+                .components(separatedBy: "timelineItems(last: 1) { updatedAt }").count - 1 == 2
+        )
         #expect(!body.localizedCaseInsensitiveContains("access_token"))
         #expect(!body.localizedCaseInsensitiveContains("bearer"))
     }
@@ -37,6 +41,7 @@ struct GitHubCLIClientTests {
         #expect(snapshot.records[0].authorLogin == nil)
         #expect(snapshot.records[0].reasons == [.assigned, .mentioned])
         #expect(snapshot.accountLogin == "octocat")
+        #expect(snapshot.records[0].lastActivityAt > snapshot.records[0].updatedAt)
     }
 
     @Test
@@ -64,6 +69,87 @@ struct GitHubCLIClientTests {
         #expect(snapshot.records[0].isDraft)
         #expect(snapshot.records[0].authorLogin == nil)
         #expect(snapshot.records[0].reasons == [.reviewRequested, .mentioned])
+        #expect(snapshot.records[0].lastActivityAt > snapshot.records[0].updatedAt)
+    }
+
+    @Test
+    func deduplicationRetainsTheNewestTimelineActivity() async throws {
+        let older = node(
+            id: "I_1",
+            type: "Issue",
+            number: 7,
+            repository: "owner/repo",
+            author: "author",
+            lastActivityAt: "2026-08-14T11:30:00Z"
+        )
+        let newer = node(
+            id: "I_1",
+            type: "Issue",
+            number: 7,
+            repository: "owner/repo",
+            author: "author",
+            lastActivityAt: "2026-08-14T13:00:00Z"
+        )
+        let payload = initialPayload(connections: [
+            "assignedIssues": connection(nodes: [older], total: 1),
+            "mentionedIssues": connection(nodes: [newer], total: 1),
+        ])
+        let client = GitHubCLIClient(
+            executor: StubGitHubCLIExecutor(results: [jsonResult(payload)])
+        )
+
+        let snapshot = try await client.fetchAttention(for: "octocat")
+        let expectedDate = try #require(
+            ISO8601DateFormatter().date(from: "2026-08-14T13:00:00Z")
+        )
+
+        #expect(snapshot.records.count == 1)
+        #expect(snapshot.records[0].lastActivityAt == expectedDate)
+        #expect(snapshot.records[0].reasons == [.assigned, .mentioned])
+    }
+
+    @Test
+    func rejectsMissingTimelineActivity() async {
+        var issue = node(
+            id: "I_1",
+            type: "Issue",
+            number: 7,
+            repository: "owner/repo",
+            author: "author"
+        )
+        issue.removeValue(forKey: "timelineItems")
+        let payload = initialPayload(connections: [
+            "assignedIssues": connection(nodes: [issue], total: 1),
+        ])
+        let client = GitHubCLIClient(
+            executor: StubGitHubCLIExecutor(results: [jsonResult(payload)])
+        )
+
+        await #expect(throws: GitHubCLIError.invalidResponse) {
+            try await client.fetchAttention(for: "octocat")
+        }
+    }
+
+    @Test
+    func rejectsMalformedTimelineActivity() async {
+        let issue = node(
+            id: "I_1",
+            type: "Issue",
+            number: 7,
+            repository: "owner/repo",
+            author: "author",
+            lastActivityAt: "not-a-timestamp"
+        )
+        let payload = initialPayload(connections: [
+            "assignedIssues": connection(nodes: [issue], total: 1),
+        ])
+        let client = GitHubCLIClient(
+            executor: StubGitHubCLIExecutor(results: [jsonResult(payload)])
+        )
+
+        await #expect(throws: GitHubCLIError.invalidResponse) {
+            try await client.fetchAttention(for: "octocat")
+        }
     }
 
     @Test
@@ -213,7 +299,9 @@ struct GitHubCLIClientTests {
         type: String,
         number: Int,
         repository: String,
-        author: String?
+        author: String?,
+        updatedAt: String = "2026-08-14T11:00:00Z",
+        lastActivityAt: String = "2026-08-14T11:30:00Z"
     ) -> [String: Any] {
         var value: [String: Any] = [
             "__typename": type,
@@ -222,7 +310,8 @@ struct GitHubCLIClientTests {
             "title": "Item \(number)",
             "url": "https://github.com/\(repository)/issues/\(number)",
             "createdAt": "2026-08-14T10:00:00Z",
-            "updatedAt": "2026-08-14T11:00:00Z",
+            "updatedAt": updatedAt,
+            "timelineItems": ["updatedAt": lastActivityAt],
             "repository": ["nameWithOwner": repository],
         ]
         value["author"] = author.map { ["login": $0] } ?? NSNull()

@@ -1,3 +1,4 @@
+import Foundation
 import SwiftData
 import Testing
 @testable import AttentionSeaker
@@ -15,16 +16,27 @@ struct AttentionCacheStoreTests {
         var items = try container.mainContext.fetch(FetchDescriptor<AttentionItem>())
         #expect(items.count == 2)
 
-        var updatedSecond = second
-        updatedSecond.reasons.formUnion(.authored)
+        let updatedSecond = AttentionRecord.stub(
+            id: "second",
+            number: 2,
+            updatedAt: second.updatedAt,
+            lastActivityAt: second.lastActivityAt.addingTimeInterval(300),
+            reasons: [.mentioned, .authored]
+        )
         let third = AttentionRecord.stub(id: "third", number: 3, reasons: .reviewRequested)
         try store.replace(with: .stub(records: [updatedSecond, third]))
 
         items = try container.mainContext.fetch(FetchDescriptor<AttentionItem>())
         #expect(Set(items.map(\.nodeID)) == ["second", "third"])
         #expect(items.first(where: { $0.nodeID == "second" })?.reasons == [.mentioned, .authored])
+        #expect(
+            items.first(where: { $0.nodeID == "second" })?.lastActivityAt
+                == updatedSecond.lastActivityAt
+        )
         let insertedMetadata = try store.loadMetadata()
         #expect(insertedMetadata?.accountLogin == "octocat")
+        let metadataModels = try container.mainContext.fetch(FetchDescriptor<CacheMetadata>())
+        #expect(metadataModels.first?.schemaVersion == 3)
     }
 
     @Test
@@ -90,7 +102,13 @@ struct AttentionCacheStoreTests {
 
         let first = try store.takeNotificationCandidates(matching: preferences)
         let second = try store.takeNotificationCandidates(matching: preferences)
-        try store.replace(with: .stub(records: [record]))
+        let laterActivity = AttentionRecord.stub(
+            id: "assigned-issue",
+            updatedAt: record.updatedAt,
+            lastActivityAt: record.lastActivityAt.addingTimeInterval(300),
+            reasons: .assigned
+        )
+        try store.replace(with: .stub(records: [laterActivity]))
         let afterUpdate = try store.takeNotificationCandidates(matching: preferences)
 
         #expect(first.map(\.nodeID) == ["assigned-issue"])
@@ -98,6 +116,7 @@ struct AttentionCacheStoreTests {
         #expect(afterUpdate.isEmpty)
         let item = try container.mainContext.fetch(FetchDescriptor<AttentionItem>()).first
         #expect(item?.hasBeenNotified == true)
+        #expect(item?.lastActivityAt == laterActivity.lastActivityAt)
     }
 
     @Test

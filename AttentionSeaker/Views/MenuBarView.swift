@@ -1,3 +1,4 @@
+import AppKit
 import SwiftData
 import SwiftUI
 
@@ -36,7 +37,7 @@ enum AttentionFeedSection: String, CaseIterable, Identifiable {
 struct MenuBarView: View {
     @Environment(AppController.self) private var controller
     @Query(sort: [
-        SortDescriptor(\AttentionItem.updatedAt, order: .reverse),
+        SortDescriptor(\AttentionItem.lastActivityAt, order: .reverse),
         SortDescriptor(\AttentionItem.repositoryName),
         SortDescriptor(\AttentionItem.number),
     ]) private var items: [AttentionItem]
@@ -124,6 +125,11 @@ struct MenuBarView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityHint("Opens on GitHub")
+                        .contextMenu {
+                            Button("Copy Link", systemImage: "doc.on.doc") {
+                                copyLink(item.urlString)
+                            }
+                        }
                     }
                     .listStyle(.inset)
                 }
@@ -245,6 +251,11 @@ struct MenuBarView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.orange.opacity(0.08))
+    }
+
+    private func copyLink(_ urlString: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(urlString, forType: .string)
     }
 
     private func centeredState(

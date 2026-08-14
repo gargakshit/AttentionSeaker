@@ -32,13 +32,25 @@ struct AttentionSearchDescriptorTests {
     }
 
     @Test
-    func stableSortUsesDateThenRepositoryThenNumber() {
+    func stableSortUsesLastActivityThenRepositoryThenNumber() {
         let date = Date(timeIntervalSince1970: 10)
         let records = [
-            AttentionRecord.stub(id: "3", repository: "b/repo", number: 1, updatedAt: date),
-            AttentionRecord.stub(id: "2", repository: "a/repo", number: 2, updatedAt: date),
-            AttentionRecord.stub(id: "1", repository: "a/repo", number: 1, updatedAt: date),
-            AttentionRecord.stub(id: "4", repository: "z/repo", number: 1, updatedAt: date.addingTimeInterval(1)),
+            AttentionRecord.stub(
+                id: "3", repository: "b/repo", number: 1,
+                updatedAt: date.addingTimeInterval(20), lastActivityAt: date
+            ),
+            AttentionRecord.stub(
+                id: "2", repository: "a/repo", number: 2,
+                updatedAt: date.addingTimeInterval(30), lastActivityAt: date
+            ),
+            AttentionRecord.stub(
+                id: "1", repository: "a/repo", number: 1,
+                updatedAt: date.addingTimeInterval(40), lastActivityAt: date
+            ),
+            AttentionRecord.stub(
+                id: "4", repository: "z/repo", number: 1,
+                updatedAt: date, lastActivityAt: date.addingTimeInterval(1)
+            ),
         ]
 
         let sorted = records.sorted(by: GitHubCLIClient.stableAttentionSort)

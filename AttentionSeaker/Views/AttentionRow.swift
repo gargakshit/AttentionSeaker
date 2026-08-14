@@ -35,10 +35,13 @@ struct AttentionRow: View {
                         }
                     }
                     Spacer(minLength: 4)
-                    Text(item.updatedAt, style: .relative)
+                    Text(item.lastActivityAt, style: .relative)
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
+                        .accessibilityLabel(
+                            "Last activity \(item.lastActivityAt.formatted(.relative(presentation: .named)))"
+                        )
                 }
             }
         }

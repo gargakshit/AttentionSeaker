@@ -193,6 +193,7 @@ extension AttentionRecord {
         repository: String = "owner/repo",
         number: Int = 1,
         updatedAt: Date = Date(timeIntervalSince1970: 1_700_000_000),
+        lastActivityAt: Date? = nil,
         reasons: AttentionReason = .assigned
     ) -> AttentionRecord {
         AttentionRecord(
@@ -205,6 +206,7 @@ extension AttentionRecord {
             authorLogin: "author",
             createdAt: updatedAt.addingTimeInterval(-3_600),
             updatedAt: updatedAt,
+            lastActivityAt: lastActivityAt ?? updatedAt,
             isDraft: false,
             reasons: reasons
         )

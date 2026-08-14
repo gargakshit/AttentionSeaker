@@ -21,7 +21,7 @@ struct AttentionSeakerApp: App {
     }
 
     var body: some Scene {
-        MenuBarExtra("AttentionSeaker", systemImage: "bell") {
+        MenuBarExtra("AttentionSeaker", systemImage: "cat") {
             MenuBarView()
                 .environment(controller)
                 .modelContainer(modelContainer)

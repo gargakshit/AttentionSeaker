@@ -34,6 +34,7 @@ struct AttentionRecord: Identifiable, Equatable, Sendable {
     let authorLogin: String?
     let createdAt: Date
     let updatedAt: Date
+    let lastActivityAt: Date
     let isDraft: Bool
     var reasons: AttentionReason
 }
@@ -68,6 +69,7 @@ final class AttentionItem {
     var authorLogin: String?
     var createdAt: Date
     var updatedAt: Date
+    var lastActivityAt: Date
     var isDraft: Bool
     var reasonsRawValue: Int
     var hasBeenNotified: Bool = false
@@ -82,6 +84,7 @@ final class AttentionItem {
         authorLogin = record.authorLogin
         createdAt = record.createdAt
         updatedAt = record.updatedAt
+        lastActivityAt = record.lastActivityAt
         isDraft = record.isDraft
         reasonsRawValue = record.reasons.rawValue
         hasBeenNotified = false
@@ -108,6 +111,7 @@ final class AttentionItem {
         authorLogin = record.authorLogin
         createdAt = record.createdAt
         updatedAt = record.updatedAt
+        lastActivityAt = record.lastActivityAt
         isDraft = record.isDraft
         reasonsRawValue = record.reasons.rawValue
     }
@@ -126,7 +130,7 @@ final class CacheMetadata {
         accountLogin: String,
         lastSuccessfulRefreshAt: Date,
         truncatedReasons: AttentionReason,
-        schemaVersion: Int = 2
+        schemaVersion: Int = 3
     ) {
         self.identifier = identifier
         self.accountLogin = accountLogin

@@ -92,7 +92,7 @@ final class SwiftDataAttentionCacheStore: AttentionCacheStoring {
             metadata.accountLogin = snapshot.accountLogin
             metadata.lastSuccessfulRefreshAt = snapshot.fetchedAt
             metadata.truncatedReasonsRawValue = snapshot.truncatedReasons.rawValue
-            metadata.schemaVersion = 2
+            metadata.schemaVersion = 3
 
             try saveContext(context)
         } catch {

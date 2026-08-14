@@ -93,8 +93,15 @@ final class GitHubCLIClient: GitHubAttentionFetching {
             for node in nodes {
                 let incoming = try node.record(reason: descriptor.reason, expectedKind: descriptor.kind)
                 if var existing = recordsByID[incoming.nodeID] {
-                    existing.reasons.formUnion(incoming.reasons)
-                    recordsByID[incoming.nodeID] = existing
+                    let combinedReasons = existing.reasons.union(incoming.reasons)
+                    if incoming.lastActivityAt > existing.lastActivityAt {
+                        var newest = incoming
+                        newest.reasons = combinedReasons
+                        recordsByID[incoming.nodeID] = newest
+                    } else {
+                        existing.reasons = combinedReasons
+                        recordsByID[incoming.nodeID] = existing
+                    }
                 } else {
                     recordsByID[incoming.nodeID] = incoming
                 }
@@ -111,8 +118,8 @@ final class GitHubCLIClient: GitHubAttentionFetching {
     }
 
     static func stableAttentionSort(_ lhs: AttentionRecord, _ rhs: AttentionRecord) -> Bool {
-        if lhs.updatedAt != rhs.updatedAt {
-            return lhs.updatedAt > rhs.updatedAt
+        if lhs.lastActivityAt != rhs.lastActivityAt {
+            return lhs.lastActivityAt > rhs.lastActivityAt
         }
         let repositoryOrder = lhs.repositoryName.localizedStandardCompare(rhs.repositoryName)
         if repositoryOrder != .orderedSame {
@@ -178,7 +185,7 @@ final class GitHubCLIClient: GitHubAttentionFetching {
         return data
     }
 
-    private static let nodeFields = """
+    static let nodeFields = """
         nodes {
           __typename
           ... on Issue {
@@ -189,6 +196,7 @@ final class GitHubCLIClient: GitHubAttentionFetching {
             author { login }
             createdAt
             updatedAt
+            timelineItems(last: 1) { updatedAt }
             repository { nameWithOwner }
           }
           ... on PullRequest {
@@ -199,6 +207,7 @@ final class GitHubCLIClient: GitHubAttentionFetching {
             author { login }
             createdAt
             updatedAt
+            timelineItems(last: 1) { updatedAt }
             isDraft
             repository { nameWithOwner }
           }
@@ -331,6 +340,7 @@ private struct SearchNode: Decodable {
     let author: SearchAuthor?
     let createdAt: Date
     let updatedAt: Date
+    let timelineItems: TimelineSummary
     let isDraft: Bool?
     let repository: SearchRepository
 
@@ -343,6 +353,7 @@ private struct SearchNode: Decodable {
         case author
         case createdAt
         case updatedAt
+        case timelineItems
         case isDraft
         case repository
     }
@@ -371,10 +382,15 @@ private struct SearchNode: Decodable {
             authorLogin: author?.login,
             createdAt: createdAt,
             updatedAt: updatedAt,
+            lastActivityAt: timelineItems.updatedAt,
             isDraft: isDraft ?? false,
             reasons: reason
         )
     }
+}
+
+private struct TimelineSummary: Decodable {
+    let updatedAt: Date
 }
 
 private struct SearchAuthor: Decodable {
