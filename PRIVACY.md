@@ -4,7 +4,7 @@ AttentionSeaker is a local macOS menu-bar application. It does not operate a dev
 
 ## GitHub access
 
-Authentication happens directly between AttentionSeaker and GitHub. The OAuth access token is stored in the macOS Keychain and is sent only to GitHub over HTTPS. The app requests GitHub's `repo` OAuth scope so it can read issues and pull requests from private repositories visible to the signed-in account. AttentionSeaker performs read-only API operations.
+AttentionSeaker invokes the GitHub CLI (`gh`) installed on your Mac and asks it to perform read-only GitHub GraphQL queries. Authentication and credential storage are managed entirely by `gh`; AttentionSeaker never reads, receives, stores, or logs your GitHub access token. The repositories available to the app are determined by the account and scopes configured in `gh`.
 
 ## Local data
 
@@ -14,9 +14,8 @@ The refresh interval is stored in app-local preferences. No app data is used for
 
 ## Deletion
 
-Using **Sign Out and Clear Cache** removes the GitHub token from Keychain and deletes all locally cached GitHub metadata.
+Using **Clear Cached GitHub Data** deletes all locally cached GitHub metadata. It does not sign out or modify the authentication used by `gh`; use `gh auth logout` separately if desired.
 
 ## Contact
 
 Questions and updates are handled at <https://github.com/gargakshit/AttentionSeaker>.
-

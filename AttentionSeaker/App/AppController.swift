@@ -3,9 +3,9 @@ import Foundation
 import Observation
 
 enum AuthenticationState: Equatable {
-    case notConfigured
+    case checking
+    case cliUnavailable
     case signedOut
-    case authorizing(DeviceAuthorization)
     case signedIn(login: String)
     case failed(message: String)
 }
@@ -21,7 +21,7 @@ enum RefreshState: Equatable {
 final class AppController {
     private static let refreshIntervalKey = "refreshIntervalMinutes"
 
-    private(set) var authenticationState: AuthenticationState
+    private(set) var authenticationState: AuthenticationState = .checking
     private(set) var refreshState: RefreshState = .idle
     private(set) var lastSuccessfulRefreshAt: Date?
     private(set) var truncatedReasons: AttentionReason = []
@@ -30,26 +30,17 @@ final class AppController {
     private(set) var cachedAccountLogin: String?
     private(set) var rateLimit: RateLimitInfo?
 
-    @ObservationIgnored private let configuration: AppConfiguration
-    @ObservationIgnored private let oauth: OAuthAuthenticating
-    @ObservationIgnored private let tokenStore: TokenStoring
     @ObservationIgnored private let github: GitHubAttentionFetching
     @ObservationIgnored private let cache: AttentionCacheStoring
     @ObservationIgnored private let launchAtLogin: LaunchAtLoginControlling
     @ObservationIgnored private let userDefaults: UserDefaults
     @ObservationIgnored private let schedulerSleep: (TimeInterval) async throws -> Void
 
-    @ObservationIgnored private var token: String?
-    @ObservationIgnored private var authorizationTask: Task<Void, Never>?
     @ObservationIgnored private var schedulerTask: Task<Void, Never>?
-    @ObservationIgnored private var authenticationStateBeforeAuthorization: AuthenticationState?
-    @ObservationIgnored private var credentialGeneration = 0
+    @ObservationIgnored private var accountGeneration = 0
     @ObservationIgnored private var hasStarted = false
 
     init(
-        configuration: AppConfiguration,
-        oauth: OAuthAuthenticating,
-        tokenStore: TokenStoring,
         github: GitHubAttentionFetching,
         cache: AttentionCacheStoring,
         launchAtLogin: LaunchAtLoginControlling,
@@ -58,9 +49,6 @@ final class AppController {
             try await Task.sleep(for: .seconds(interval))
         }
     ) {
-        self.configuration = configuration
-        self.oauth = oauth
-        self.tokenStore = tokenStore
         self.github = github
         self.cache = cache
         self.launchAtLogin = launchAtLogin
@@ -70,7 +58,6 @@ final class AppController {
         let storedInterval = userDefaults.object(forKey: Self.refreshIntervalKey) as? Int ?? 5
         refreshIntervalMinutes = Self.validatedRefreshInterval(storedInterval)
         launchAtLoginStatus = launchAtLogin.status
-        authenticationState = configuration.githubOAuthClientID == nil ? .notConfigured : .signedOut
 
         if let metadata = try? cache.loadMetadata() {
             cachedAccountLogin = metadata.accountLogin
@@ -80,7 +67,6 @@ final class AppController {
     }
 
     deinit {
-        authorizationTask?.cancel()
         schedulerTask?.cancel()
     }
 
@@ -96,146 +82,97 @@ final class AppController {
     }
 
     var canRefresh: Bool {
-        signedInLogin != nil && token != nil && !isRefreshing
+        signedInLogin != nil && !isRefreshing
     }
 
     var isLaunchAtLoginEnabled: Bool {
         launchAtLoginStatus == .enabled
     }
 
-    var oauthClientID: String? {
-        configuration.githubOAuthClientID
-    }
-
-    var manageGitHubAccessURL: URL? {
-        configuration.githubOAuthClientID.flatMap {
-            URL(string: "https://github.com/settings/connections/applications/\($0)")
-        }
+    var gitHubCLIPath: String? {
+        github.executableURL?.path
     }
 
     func start() async {
         guard !hasStarted else { return }
         hasStarted = true
         launchAtLoginStatus = launchAtLogin.status
-
-        do {
-            token = try tokenStore.readToken()
-            if token != nil {
-                credentialGeneration &+= 1
-            }
-        } catch {
-            refreshState = .failed(message: error.localizedDescription)
-        }
-
-        if let token {
-            do {
-                let login = try await github.viewerLogin(token: token)
-                if let cachedAccountLogin,
-                   cachedAccountLogin.caseInsensitiveCompare(login) != .orderedSame {
-                    try cache.clear()
-                    resetCacheMetadata()
-                }
-                authenticationState = .signedIn(login: login)
-                await refresh()
-            } catch GitHubAPIError.unauthorized {
-                invalidateToken()
-                refreshState = .failed(message: GitHubAPIError.unauthorized.localizedDescription)
-            } catch {
-                refreshState = .failed(message: error.localizedDescription)
-                if configuration.githubOAuthClientID == nil {
-                    authenticationState = .notConfigured
-                }
-            }
-        } else {
-            authenticationState = configuration.githubOAuthClientID == nil ? .notConfigured : .signedOut
-        }
-
+        await recheckGitHub()
         startScheduler()
     }
 
-    func connectGitHub() {
-        guard authorizationTask == nil,
-              let clientID = configuration.githubOAuthClientID
-        else {
-            if configuration.githubOAuthClientID == nil {
-                authenticationState = .notConfigured
-            }
-            return
-        }
-
+    func recheckGitHub() async {
+        accountGeneration &+= 1
+        let checkGeneration = accountGeneration
         refreshState = .idle
-        if authenticationStateBeforeAuthorization == nil {
-            if case .signedIn = authenticationState {
-                authenticationStateBeforeAuthorization = authenticationState
-            } else {
-                authenticationStateBeforeAuthorization = .signedOut
-            }
-        }
-        authorizationTask = Task { [weak self] in
-            guard let self else { return }
-            await self.performAuthorization(clientID: clientID)
-        }
-    }
+        authenticationState = github.executableURL == nil ? .cliUnavailable : .checking
 
-    func cancelAuthorization() {
-        oauth.cancel()
-        authorizationTask?.cancel()
-        authorizationTask = nil
-        authenticationState = authenticationStateBeforeAuthorization
-            ?? (configuration.githubOAuthClientID == nil ? .notConfigured : .signedOut)
-        authenticationStateBeforeAuthorization = nil
-    }
-
-    func signOutAndClearCache() {
-        cancelAuthorization()
-        authenticationStateBeforeAuthorization = nil
-        credentialGeneration &+= 1
-        var messages: [String] = []
+        guard github.executableURL != nil else { return }
 
         do {
-            try tokenStore.deleteToken()
-        } catch {
-            messages.append(error.localizedDescription)
-        }
-        token = nil
+            let login = try await github.viewerLogin()
+            guard checkGeneration == accountGeneration else { return }
 
+            if let cachedAccountLogin,
+               cachedAccountLogin.caseInsensitiveCompare(login) != .orderedSame {
+                try cache.clear()
+                resetCacheMetadata()
+            }
+            authenticationState = .signedIn(login: login)
+            await refresh()
+        } catch GitHubCLIError.executableNotFound {
+            guard checkGeneration == accountGeneration else { return }
+            authenticationState = .cliUnavailable
+        } catch GitHubCLIError.notAuthenticated {
+            guard checkGeneration == accountGeneration else { return }
+            authenticationState = .signedOut
+        } catch {
+            guard checkGeneration == accountGeneration else { return }
+            authenticationState = .failed(message: error.localizedDescription)
+        }
+    }
+
+    func clearCache() {
+        accountGeneration &+= 1
+        var message: String?
         do {
             try cache.clear()
             resetCacheMetadata()
         } catch {
-            messages.append(error.localizedDescription)
+            message = error.localizedDescription
         }
-
-        authenticationState = configuration.githubOAuthClientID == nil ? .notConfigured : .signedOut
-        refreshState = messages.isEmpty ? .idle : .failed(message: messages.joined(separator: "\n"))
+        refreshState = message.map(RefreshState.failed(message:)) ?? .idle
     }
 
     func refresh() async {
-        guard !isRefreshing,
-              let activeToken = token,
-              let login = signedInLogin
-        else { return }
+        guard !isRefreshing, let login = signedInLogin else { return }
 
-        let refreshGeneration = credentialGeneration
+        let refreshGeneration = accountGeneration
         refreshState = .refreshing
         do {
-            let snapshot = try await github.fetchAttention(for: login, token: activeToken)
-            guard refreshGeneration == credentialGeneration,
-                  token == activeToken,
+            let snapshot = try await github.fetchAttention(for: login)
+            guard refreshGeneration == accountGeneration,
                   signedInLogin?.caseInsensitiveCompare(login) == .orderedSame
             else { return }
+
             try cache.replace(with: snapshot)
             cachedAccountLogin = snapshot.accountLogin
             lastSuccessfulRefreshAt = snapshot.fetchedAt
             truncatedReasons = snapshot.truncatedReasons
             rateLimit = snapshot.rateLimit
             refreshState = .idle
-        } catch GitHubAPIError.unauthorized {
-            guard refreshGeneration == credentialGeneration else { return }
-            invalidateToken()
-            refreshState = .failed(message: GitHubAPIError.unauthorized.localizedDescription)
+        } catch GitHubCLIError.notAuthenticated {
+            guard refreshGeneration == accountGeneration else { return }
+            accountGeneration &+= 1
+            authenticationState = .signedOut
+            refreshState = .failed(message: GitHubCLIError.notAuthenticated.localizedDescription)
+        } catch GitHubCLIError.executableNotFound {
+            guard refreshGeneration == accountGeneration else { return }
+            accountGeneration &+= 1
+            authenticationState = .cliUnavailable
+            refreshState = .failed(message: GitHubCLIError.executableNotFound.localizedDescription)
         } catch {
-            guard refreshGeneration == credentialGeneration else { return }
+            guard refreshGeneration == accountGeneration else { return }
             refreshState = .failed(message: error.localizedDescription)
         }
     }
@@ -272,54 +209,18 @@ final class AppController {
         launchAtLogin.openSystemSettings()
     }
 
+    func openTerminal() {
+        NSWorkspace.shared.open(
+            URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app")
+        )
+    }
+
     func open(_ url: URL) {
         NSWorkspace.shared.open(url)
     }
 
     func quit() {
         NSApplication.shared.terminate(nil)
-    }
-
-    private func performAuthorization(clientID: String) async {
-        defer { authorizationTask = nil }
-        do {
-            let authorization = try await oauth.requestDeviceAuthorization(clientID: clientID)
-            try Task.checkCancellation()
-            authenticationState = .authorizing(authorization)
-
-            let accessToken = try await oauth.waitForAccessToken(
-                clientID: clientID,
-                authorization: authorization
-            )
-            try Task.checkCancellation()
-
-            let login = try await github.viewerLogin(token: accessToken.value)
-            if let cachedAccountLogin,
-               cachedAccountLogin.caseInsensitiveCompare(login) != .orderedSame {
-                try cache.clear()
-                resetCacheMetadata()
-            }
-
-            try tokenStore.saveToken(accessToken.value)
-            credentialGeneration &+= 1
-            token = accessToken.value
-            authenticationStateBeforeAuthorization = nil
-            authenticationState = .signedIn(login: login)
-            await refresh()
-        } catch is CancellationError {
-            authenticationState = authenticationStateBeforeAuthorization
-                ?? (configuration.githubOAuthClientID == nil ? .notConfigured : .signedOut)
-            authenticationStateBeforeAuthorization = nil
-        } catch {
-            authenticationState = .failed(message: error.localizedDescription)
-        }
-    }
-
-    private func invalidateToken() {
-        credentialGeneration &+= 1
-        try? tokenStore.deleteToken()
-        token = nil
-        authenticationState = configuration.githubOAuthClientID == nil ? .notConfigured : .signedOut
     }
 
     private func resetCacheMetadata() {
@@ -332,10 +233,11 @@ final class AppController {
     private func startScheduler() {
         schedulerTask?.cancel()
         let interval = refreshIntervalMinutes
+        let sleep = schedulerSleep
         schedulerTask = Task { [weak self] in
             while !Task.isCancelled {
                 do {
-                    try await schedulerSleep(TimeInterval(interval * 60))
+                    try await sleep(TimeInterval(interval * 60))
                 } catch {
                     return
                 }

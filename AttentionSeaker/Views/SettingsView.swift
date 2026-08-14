@@ -23,50 +23,64 @@ struct SettingsView: View {
     private var accountSection: some View {
         Section("Account") {
             switch controller.authenticationState {
-            case .notConfigured:
-                LabeledContent("GitHub") {
-                    Text("OAuth client ID missing")
-                        .foregroundStyle(.secondary)
+            case .checking:
+                HStack {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Checking GitHub CLI…")
                 }
-                Text("Set the GITHUB_OAUTH_CLIENT_ID build setting to the client ID of an OAuth App with Device Flow enabled.")
+            case .cliUnavailable:
+                LabeledContent("GitHub CLI", value: "Not found")
+                Text("Install gh in /opt/homebrew/bin, /usr/local/bin, /opt/local/bin, or a directory on PATH.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            case .signedOut:
-                connectionDisclosure
-                Button("Connect GitHub…") {
-                    controller.connectGitHub()
+                HStack {
+                    Link("Get GitHub CLI", destination: AppConfiguration.gitHubCLIHomepageURL)
+                    Button("Check Again") {
+                        Task { await controller.recheckGitHub() }
+                    }
                 }
-                .buttonStyle(.borderedProminent)
-            case .authorizing(let authorization):
-                authorizationView(authorization)
+            case .signedOut:
+                LabeledContent("GitHub CLI", value: "Authentication required")
+                authenticationInstructions
+                HStack {
+                    Button("Copy gh auth login") {
+                        copyLoginCommand()
+                    }
+                    Button("Open Terminal") {
+                        controller.openTerminal()
+                    }
+                    Button("Check Again") {
+                        Task { await controller.recheckGitHub() }
+                    }
+                }
             case .signedIn(let login):
                 LabeledContent("GitHub account", value: "@\(login)")
-                connectionDisclosure
+                if let path = controller.gitHubCLIPath {
+                    LabeledContent("GitHub CLI", value: path)
+                }
+                Text("Authentication is managed by your local gh installation. AttentionSeaker does not read or store its access token.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 HStack {
-                    Button("Reconnect GitHub…") {
-                        controller.connectGitHub()
-                    }
-                    if let url = controller.manageGitHubAccessURL {
-                        Button("Manage GitHub Access") {
-                            controller.open(url)
-                        }
+                    Button("Check Account Again") {
+                        Task { await controller.recheckGitHub() }
                     }
                     Spacer()
-                    Button("Sign Out and Clear Cache", role: .destructive) {
-                        controller.signOutAndClearCache()
+                    Button("Clear Cached GitHub Data", role: .destructive) {
+                        controller.clearCache()
                     }
                 }
             case .failed(let message):
                 Text(message)
                     .foregroundStyle(.red)
-                connectionDisclosure
+                authenticationInstructions
                 HStack {
-                    Button("Try Again") {
-                        controller.connectGitHub()
+                    Button("Open Terminal") {
+                        controller.openTerminal()
                     }
-                    .buttonStyle(.borderedProminent)
-                    Button("Cancel") {
-                        controller.cancelAuthorization()
+                    Button("Check Again") {
+                        Task { await controller.recheckGitHub() }
                     }
                 }
             }
@@ -143,38 +157,15 @@ struct SettingsView: View {
         }
     }
 
-    private var connectionDisclosure: some View {
-        Text("AttentionSeaker requests GitHub's broad repo OAuth scope so it can read matching items from private repositories. The app performs read-only API requests and stores the token only in Keychain.")
+    private var authenticationInstructions: some View {
+        Text("Run `gh auth login` in Terminal. The scopes granted to gh determine which public and private repositories AttentionSeaker can read.")
             .font(.caption)
             .foregroundStyle(.secondary)
     }
 
-    private func authorizationView(_ authorization: DeviceAuthorization) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Enter this code on GitHub")
-                .font(.headline)
-            Text(authorization.userCode)
-                .font(.system(.title2, design: .monospaced, weight: .semibold))
-                .textSelection(.enabled)
-            Text("Code expires \(authorization.expiresAt, style: .relative).")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            HStack {
-                Button("Copy Code") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(authorization.userCode, forType: .string)
-                }
-                Button("Open GitHub") {
-                    controller.open(authorization.verificationURL)
-                }
-                .buttonStyle(.borderedProminent)
-                Button("Cancel") {
-                    controller.cancelAuthorization()
-                }
-            }
-            ProgressView()
-                .controlSize(.small)
-        }
+    private func copyLoginCommand() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString("gh auth login", forType: .string)
     }
 
     private var versionDescription: String {

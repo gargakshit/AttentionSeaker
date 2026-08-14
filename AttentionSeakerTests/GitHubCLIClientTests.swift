@@ -3,30 +3,40 @@ import Testing
 @testable import AttentionSeaker
 
 @MainActor
-struct GitHubAPIClientTests {
+struct GitHubCLIClientTests {
+    @Test
+    func invokesGlobalGitHubCLIWithGraphQLOnStandardInput() async throws {
+        let executor = StubGitHubCLIExecutor(results: [jsonResult(initialPayload(connections: [:]))])
+        let client = GitHubCLIClient(executor: executor)
+
+        _ = try await client.fetchAttention(for: "octocat")
+
+        #expect(executor.invocations.count == 1)
+        #expect(executor.invocations[0].arguments == ["api", "graphql", "--input", "-"])
+        let input = try #require(executor.invocations[0].standardInput)
+        let body = try #require(String(data: input, encoding: .utf8))
+        #expect(body.contains("assignedIssues"))
+        #expect(body.contains("review-requested:octocat"))
+        #expect(!body.localizedCaseInsensitiveContains("access_token"))
+        #expect(!body.localizedCaseInsensitiveContains("bearer"))
+    }
+
     @Test
     func decodesNullableAuthorsAndMergesReasonsByNodeID() async throws {
-        let issue = node(
-            id: "I_1",
-            type: "Issue",
-            number: 7,
-            repository: "owner/repo",
-            author: nil
-        )
+        let issue = node(id: "I_1", type: "Issue", number: 7, repository: "owner/repo", author: nil)
         let payload = initialPayload(connections: [
             "assignedIssues": connection(nodes: [issue], total: 1),
             "mentionedIssues": connection(nodes: [issue], total: 1),
         ])
-        let transport = StubHTTPTransport(stubs: [jsonStub(payload)])
-        let client = GitHubAPIClient(transport: transport)
+        let executor = StubGitHubCLIExecutor(results: [jsonResult(payload)])
+        let client = GitHubCLIClient(executor: executor)
 
-        let snapshot = try await client.fetchAttention(for: "octocat", token: "token")
+        let snapshot = try await client.fetchAttention(for: "octocat")
 
         #expect(snapshot.records.count == 1)
         #expect(snapshot.records[0].authorLogin == nil)
         #expect(snapshot.records[0].reasons == [.assigned, .mentioned])
         #expect(snapshot.accountLogin == "octocat")
-        #expect(transport.requests.count == 1)
     }
 
     @Test
@@ -43,9 +53,11 @@ struct GitHubAPIClientTests {
             "reviewPRs": connection(nodes: [pullRequest], total: 1),
             "mentionedPRs": connection(nodes: [pullRequest], total: 1),
         ])
-        let client = GitHubAPIClient(transport: StubHTTPTransport(stubs: [jsonStub(payload)]))
+        let client = GitHubCLIClient(
+            executor: StubGitHubCLIExecutor(results: [jsonResult(payload)])
+        )
 
-        let snapshot = try await client.fetchAttention(for: "octocat", token: "token")
+        let snapshot = try await client.fetchAttention(for: "octocat")
 
         #expect(snapshot.records.count == 1)
         #expect(snapshot.records[0].kind == .pullRequest)
@@ -64,69 +76,90 @@ struct GitHubAPIClientTests {
             "assignedIssues": connection(nodes: [issueOne], total: 2, hasNext: true, cursor: "issue-cursor"),
             "authoredPRs": connection(nodes: [prOne], total: 2, hasNext: true, cursor: "pr-cursor"),
         ])
-        let issuePage = pagePayload(connection: connection(nodes: [issueTwo], total: 2))
-        let prPage = pagePayload(connection: connection(nodes: [prTwo], total: 2))
-        let transport = StubHTTPTransport(stubs: [initial, issuePage, prPage].map(jsonStub))
-        let client = GitHubAPIClient(transport: transport)
+        let executor = StubGitHubCLIExecutor(results: [
+            jsonResult(initial),
+            jsonResult(pagePayload(connection: connection(nodes: [issueTwo], total: 2))),
+            jsonResult(pagePayload(connection: connection(nodes: [prTwo], total: 2))),
+        ])
+        let client = GitHubCLIClient(executor: executor)
 
-        let snapshot = try await client.fetchAttention(for: "octocat", token: "token")
+        let snapshot = try await client.fetchAttention(for: "octocat")
 
         #expect(Set(snapshot.records.map(\.nodeID)) == ["I_1", "I_2", "PR_1", "PR_2"])
         #expect(snapshot.truncatedReasons.isEmpty)
-        #expect(transport.requests.count == 3)
+        #expect(executor.invocations.count == 3)
     }
 
     @Test
     func paginatesToTheDefensiveCapAndMarksTruncation() async throws {
-        let firstNodes = (0..<100).map { issueNode(index: $0) }
         let firstConnection = connection(
-            nodes: firstNodes,
+            nodes: (0..<100).map { issueNode(index: $0) },
             total: 1_001,
             hasNext: true,
             cursor: "cursor-0"
         )
-        var stubs = [jsonStub(initialPayload(connections: ["assignedIssues": firstConnection]))]
+        var results = [jsonResult(initialPayload(connections: ["assignedIssues": firstConnection]))]
 
         for page in 1...9 {
             let start = page * 100
-            let nodes = (start..<(start + 100)).map { issueNode(index: $0) }
-            let payload: [String: Any] = [
-                "data": [
-                    "rateLimit": rateLimit,
-                    "search": connection(
-                        nodes: nodes,
-                        total: 1_001,
-                        hasNext: true,
-                        cursor: "cursor-\(page)"
-                    ),
-                ],
-            ]
-            stubs.append(jsonStub(payload))
+            let payload = pagePayload(connection: connection(
+                nodes: (start..<(start + 100)).map { issueNode(index: $0) },
+                total: 1_001,
+                hasNext: true,
+                cursor: "cursor-\(page)"
+            ))
+            results.append(jsonResult(payload))
         }
 
-        let transport = StubHTTPTransport(stubs: stubs)
-        let client = GitHubAPIClient(transport: transport)
-        let snapshot = try await client.fetchAttention(for: "octocat", token: "token")
+        let executor = StubGitHubCLIExecutor(results: results)
+        let snapshot = try await GitHubCLIClient(executor: executor)
+            .fetchAttention(for: "octocat")
 
         #expect(snapshot.records.count == 1_000)
         #expect(snapshot.truncatedReasons == .assigned)
-        #expect(transport.requests.count == 10)
+        #expect(executor.invocations.count == 10)
     }
 
     @Test
     func rejectsGraphQLPartialFailures() async {
         var payload = initialPayload(connections: [:])
         payload["errors"] = [["message": "Search failed"]]
-        let transport = StubHTTPTransport(stubs: [jsonStub(payload)])
-        let client = GitHubAPIClient(transport: transport)
+        let client = GitHubCLIClient(
+            executor: StubGitHubCLIExecutor(results: [jsonResult(payload)])
+        )
 
-        await #expect(throws: GitHubAPIError.graphQL("Search failed")) {
-            try await client.fetchAttention(for: "octocat", token: "token")
+        await #expect(throws: GitHubCLIError.graphQL("Search failed")) {
+            try await client.fetchAttention(for: "octocat")
+        }
+    }
+
+    @Test
+    func mapsGlobalCLIAuthenticationAndRateLimitFailures() async {
+        let authClient = GitHubCLIClient(executor: StubGitHubCLIExecutor(results: [
+            GitHubCLIResult(
+                standardOutput: Data(),
+                standardError: "To get started with GitHub CLI, run gh auth login",
+                terminationStatus: 1
+            ),
+        ]))
+        await #expect(throws: GitHubCLIError.notAuthenticated) {
+            try await authClient.viewerLogin()
+        }
+
+        let rateClient = GitHubCLIClient(executor: StubGitHubCLIExecutor(results: [
+            GitHubCLIResult(
+                standardOutput: Data(),
+                standardError: "API rate limit exceeded",
+                terminationStatus: 1
+            ),
+        ]))
+        await #expect(throws: GitHubCLIError.rateLimited(resetAt: nil)) {
+            try await rateClient.viewerLogin()
         }
     }
 
     private var aliases: [String] {
-        return [
+        [
             "assignedIssues", "authoredIssues", "mentionedIssues",
             "assignedPRs", "authoredPRs", "reviewPRs", "mentionedPRs",
         ]
@@ -161,10 +194,7 @@ struct GitHubAPIClientTests {
         return [
             "nodes": nodes,
             "issueCount": total,
-            "pageInfo": [
-                "hasNextPage": hasNext,
-                "endCursor": endCursor,
-            ],
+            "pageInfo": ["hasNextPage": hasNext, "endCursor": endCursor],
         ]
     }
 
@@ -202,11 +232,11 @@ struct GitHubAPIClientTests {
         return value
     }
 
-    private func jsonStub(_ object: [String: Any]) -> StubHTTPTransport.Stub {
-        StubHTTPTransport.Stub(
-            data: try! JSONSerialization.data(withJSONObject: object),
-            statusCode: 200,
-            headers: [:]
+    private func jsonResult(_ object: [String: Any]) -> GitHubCLIResult {
+        GitHubCLIResult(
+            standardOutput: try! JSONSerialization.data(withJSONObject: object),
+            standardError: "",
+            terminationStatus: 0
         )
     }
 }

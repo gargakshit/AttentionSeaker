@@ -1,15 +1,14 @@
 # AttentionSeaker
 
-AttentionSeaker is a sandboxed macOS 15+ menu-bar app that shows open GitHub issues and pull requests that you authored, are assigned to, were mentioned on in comments, or were requested to review. It talks directly to GitHub, stores the OAuth token in Keychain, and keeps only a last-good metadata snapshot in SwiftData.
+AttentionSeaker is a macOS 15+ menu-bar app that shows open GitHub issues and pull requests that you authored, are assigned to, were mentioned on in comments, or were requested to review. It uses your locally installed GitHub CLI for authentication and GraphQL access, and keeps only a last-good metadata snapshot in SwiftData.
 
-## Configure GitHub OAuth
+## Configure GitHub CLI
 
-1. Create a GitHub OAuth App named `AttentionSeaker`.
-2. Set both its homepage and callback URL to `https://github.com/gargakshit/AttentionSeaker`.
-3. Enable Device Flow.
-4. In the `AttentionSeaker` target's build settings, replace `REPLACE_WITH_GITHUB_OAUTH_CLIENT_ID` in `GITHUB_OAUTH_CLIENT_ID` with the app's public client ID for both Debug and Release.
+1. Install `gh`, for example with `brew install gh`.
+2. Authenticate GitHub.com by running `gh auth login` in Terminal.
+3. Confirm the active account with `gh auth status`.
 
-No client secret belongs in this project. The app requests the broad `repo` scope so private-repository results can be included, but it makes read-only API calls.
+AttentionSeaker invokes `gh api graphql` without a shell and sends GraphQL requests over standard input. It never reads or stores the token managed by `gh`. The scopes granted to `gh` determine whether private-repository results are available.
 
 ## Build and test
 
@@ -27,6 +26,6 @@ xcodebuild test \
   -destination 'platform=macOS'
 ```
 
-The project uses only Apple frameworks and remains App Sandbox compatible. A final AppIcon, signed archive, screenshots, live support/privacy URLs, and App Store Connect metadata are separate release tasks.
+The app uses Hardened Runtime but not App Sandbox so it can execute the locally installed `gh` binary. The project uses only Apple frameworks. Signing, notarization, a final AppIcon, and release assets remain separate distribution tasks.
 
 See [PRIVACY.md](PRIVACY.md) for the privacy policy.

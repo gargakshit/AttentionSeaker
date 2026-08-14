@@ -5,11 +5,10 @@ import Testing
 @MainActor
 struct AppControllerTests {
     @Test
-    func startValidatesSavedTokenAndRefreshesOnce() async {
-        let tokenStore = StubTokenStore(token: "saved-token")
+    func startChecksTheGlobalCLIAccountAndRefreshesOnce() async {
         let github = StubGitHubClient(snapshot: .stub(records: [.stub()]))
         let cache = StubCacheStore()
-        let controller = makeController(tokenStore: tokenStore, github: github, cache: cache)
+        let controller = makeController(github: github, cache: cache)
 
         await controller.start()
 
@@ -20,19 +19,29 @@ struct AppControllerTests {
     }
 
     @Test
+    func missingGlobalCLIHasADedicatedState() async {
+        let github = StubGitHubClient()
+        github.executableURL = nil
+        let controller = makeController(github: github)
+
+        await controller.start()
+
+        #expect(controller.authenticationState == .cliUnavailable)
+        #expect(github.fetchCount == 0)
+    }
+
+    @Test
     func refreshFailureLeavesTheLastGoodCacheUntouched() async {
         let date = Date(timeIntervalSince1970: 100)
-        let metadata = CachedMetadata(
+        let github = StubGitHubClient()
+        github.fetchError = StubError.expected
+        let cache = StubCacheStore()
+        cache.metadata = CachedMetadata(
             accountLogin: "octocat",
             lastSuccessfulRefreshAt: date,
             truncatedReasons: []
         )
-        let tokenStore = StubTokenStore(token: "saved-token")
-        let github = StubGitHubClient()
-        github.fetchError = StubError.expected
-        let cache = StubCacheStore()
-        cache.metadata = metadata
-        let controller = makeController(tokenStore: tokenStore, github: github, cache: cache)
+        let controller = makeController(github: github, cache: cache)
 
         await controller.start()
 
@@ -46,39 +55,55 @@ struct AppControllerTests {
     }
 
     @Test
-    func unauthorizedRefreshDeletesTokenButKeepsCachedData() async {
-        let tokenStore = StubTokenStore(token: "saved-token")
+    func unauthenticatedGlobalCLIKeepsCachedData() async {
         let github = StubGitHubClient()
-        github.fetchError = GitHubAPIError.unauthorized
+        github.fetchError = GitHubCLIError.notAuthenticated
         let cache = StubCacheStore()
         cache.metadata = CachedMetadata(
             accountLogin: "octocat",
             lastSuccessfulRefreshAt: Date(timeIntervalSince1970: 100),
             truncatedReasons: []
         )
-        let controller = makeController(tokenStore: tokenStore, github: github, cache: cache)
+        let controller = makeController(github: github, cache: cache)
 
         await controller.start()
 
-        #expect(tokenStore.token == nil)
         #expect(cache.clearCount == 0)
         #expect(controller.authenticationState == .signedOut)
+        #expect(controller.cachedAccountLogin == "octocat")
     }
 
     @Test
-    func signingOutDeletesTokenAndCache() async {
-        let tokenStore = StubTokenStore(token: "saved-token")
+    func clearingCacheDoesNotModifyTheGlobalCLISession() async {
         let github = StubGitHubClient()
         let cache = StubCacheStore()
-        let controller = makeController(tokenStore: tokenStore, github: github, cache: cache)
+        let controller = makeController(github: github, cache: cache)
         await controller.start()
 
-        controller.signOutAndClearCache()
+        controller.clearCache()
 
-        #expect(tokenStore.token == nil)
         #expect(cache.clearCount == 1)
-        #expect(controller.authenticationState == .signedOut)
+        #expect(controller.authenticationState == .signedIn(login: "octocat"))
         #expect(controller.lastSuccessfulRefreshAt == nil)
+    }
+
+    @Test
+    func aDifferentGlobalCLIAccountClearsThePreviousSnapshotFirst() async {
+        let github = StubGitHubClient(snapshot: .stub(login: "new-user"))
+        github.login = "new-user"
+        let cache = StubCacheStore()
+        cache.metadata = CachedMetadata(
+            accountLogin: "old-user",
+            lastSuccessfulRefreshAt: Date(timeIntervalSince1970: 100),
+            truncatedReasons: []
+        )
+        let controller = makeController(github: github, cache: cache)
+
+        await controller.start()
+
+        #expect(cache.clearCount == 1)
+        #expect(cache.snapshots.count == 1)
+        #expect(controller.authenticationState == .signedIn(login: "new-user"))
     }
 
     @Test
@@ -95,10 +120,9 @@ struct AppControllerTests {
 
     @Test
     func overlappingRefreshesAreSingleFlight() async {
-        let tokenStore = StubTokenStore(token: "saved-token")
         let github = StubGitHubClient()
         github.suspendsFetch = true
-        let controller = makeController(tokenStore: tokenStore, github: github)
+        let controller = makeController(github: github)
 
         let startTask = Task { await controller.start() }
         await waitUntil { github.fetchCount == 1 }
@@ -111,23 +135,21 @@ struct AppControllerTests {
     }
 
     @Test
-    func signingOutDuringRefreshCannotRepopulateTheClearedCache() async {
-        let tokenStore = StubTokenStore(token: "saved-token")
+    func clearingCacheDuringRefreshCannotRepopulateIt() async {
         let github = StubGitHubClient(snapshot: .stub(records: [.stub()]))
         github.suspendsFetch = true
         let cache = StubCacheStore()
-        let controller = makeController(tokenStore: tokenStore, github: github, cache: cache)
+        let controller = makeController(github: github, cache: cache)
 
         let startTask = Task { await controller.start() }
         await waitUntil { github.fetchCount == 1 }
-        controller.signOutAndClearCache()
+        controller.clearCache()
         github.resumeFetch()
         await startTask.value
 
         #expect(cache.snapshots.isEmpty)
         #expect(cache.clearCount == 1)
-        #expect(tokenStore.token == nil)
-        #expect(controller.authenticationState == .signedOut)
+        #expect(controller.authenticationState == .signedIn(login: "octocat"))
     }
 
     @Test
@@ -147,7 +169,6 @@ struct AppControllerTests {
     }
 
     private func makeController(
-        tokenStore: StubTokenStore? = nil,
         github: StubGitHubClient? = nil,
         cache: StubCacheStore? = nil,
         launchAtLogin: StubLaunchAtLoginController? = nil,
@@ -159,9 +180,6 @@ struct AppControllerTests {
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
         return AppController(
-            configuration: AppConfiguration(githubOAuthClientID: "client-id"),
-            oauth: StubOAuthClient(),
-            tokenStore: tokenStore ?? StubTokenStore(),
             github: github ?? StubGitHubClient(),
             cache: cache ?? StubCacheStore(),
             launchAtLogin: launchAtLogin ?? StubLaunchAtLoginController(),

@@ -7,93 +7,36 @@ enum StubError: Error, Equatable {
 }
 
 @MainActor
-final class StubHTTPTransport: HTTPTransporting {
-    struct Stub {
-        let data: Data
-        let statusCode: Int
-        let headers: [String: String]
+final class StubGitHubCLIExecutor: GitHubCLIExecuting {
+    struct Invocation {
+        let arguments: [String]
+        let standardInput: Data?
     }
 
-    private(set) var requests: [URLRequest] = []
-    var stubs: [Stub]
-
-    init(stubs: [Stub] = []) {
-        self.stubs = stubs
-    }
-
-    func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        requests.append(request)
-        guard !stubs.isEmpty else { throw StubError.noResponse }
-        let stub = stubs.removeFirst()
-        let response = HTTPURLResponse(
-            url: request.url!,
-            statusCode: stub.statusCode,
-            httpVersion: "HTTP/1.1",
-            headerFields: stub.headers
-        )!
-        return (stub.data, response)
-    }
-}
-
-@MainActor
-final class StubTokenStore: TokenStoring {
-    var token: String?
+    var executableURL: URL?
+    var results: [GitHubCLIResult]
     var error: Error?
-    private(set) var savedTokens: [String] = []
-    private(set) var deleteCount = 0
+    private(set) var invocations: [Invocation] = []
 
-    init(token: String? = nil) {
-        self.token = token
+    init(
+        executableURL: URL? = URL(fileURLWithPath: "/opt/homebrew/bin/gh"),
+        results: [GitHubCLIResult] = []
+    ) {
+        self.executableURL = executableURL
+        self.results = results
     }
 
-    func readToken() throws -> String? {
+    func run(arguments: [String], standardInput: Data?) async throws -> GitHubCLIResult {
+        invocations.append(Invocation(arguments: arguments, standardInput: standardInput))
         if let error { throw error }
-        return token
-    }
-
-    func saveToken(_ token: String) throws {
-        if let error { throw error }
-        self.token = token
-        savedTokens.append(token)
-    }
-
-    func deleteToken() throws {
-        if let error { throw error }
-        token = nil
-        deleteCount += 1
-    }
-}
-
-@MainActor
-final class StubOAuthClient: OAuthAuthenticating {
-    var authorization = DeviceAuthorization(
-        deviceCode: "device",
-        userCode: "ABCD-EFGH",
-        verificationURL: AppConfiguration.deviceAuthorizationURL,
-        expiresAt: Date().addingTimeInterval(900),
-        pollingInterval: 5
-    )
-    var accessToken = OAuthAccessToken(value: "new-token", scopes: ["repo"])
-    var error: Error?
-    private(set) var cancelCount = 0
-
-    func requestDeviceAuthorization(clientID: String) async throws -> DeviceAuthorization {
-        if let error { throw error }
-        return authorization
-    }
-
-    func waitForAccessToken(clientID: String, authorization: DeviceAuthorization) async throws -> OAuthAccessToken {
-        if let error { throw error }
-        return accessToken
-    }
-
-    func cancel() {
-        cancelCount += 1
+        guard !results.isEmpty else { throw StubError.noResponse }
+        return results.removeFirst()
     }
 }
 
 @MainActor
 final class StubGitHubClient: GitHubAttentionFetching {
+    var executableURL: URL? = URL(fileURLWithPath: "/opt/homebrew/bin/gh")
     var login = "octocat"
     var snapshot: AttentionSnapshot
     var viewerError: Error?
@@ -106,12 +49,12 @@ final class StubGitHubClient: GitHubAttentionFetching {
         self.snapshot = snapshot ?? .stub()
     }
 
-    func viewerLogin(token: String) async throws -> String {
+    func viewerLogin() async throws -> String {
         if let viewerError { throw viewerError }
         return login
     }
 
-    func fetchAttention(for expectedLogin: String, token: String) async throws -> AttentionSnapshot {
+    func fetchAttention(for expectedLogin: String) async throws -> AttentionSnapshot {
         fetchCount += 1
         if suspendsFetch {
             await withCheckedContinuation { continuation in

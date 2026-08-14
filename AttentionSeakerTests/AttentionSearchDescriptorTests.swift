@@ -41,8 +41,7 @@ struct AttentionSearchDescriptorTests {
             AttentionRecord.stub(id: "4", repository: "z/repo", number: 1, updatedAt: date.addingTimeInterval(1)),
         ]
 
-        let sorted = records.sorted(by: GitHubAPIClient.stableAttentionSort)
+        let sorted = records.sorted(by: GitHubCLIClient.stableAttentionSort)
         #expect(sorted.map(\.nodeID) == ["4", "1", "2", "3"])
     }
 }
-

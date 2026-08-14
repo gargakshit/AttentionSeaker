@@ -8,13 +8,10 @@ struct AttentionSeakerApp: App {
 
     init() {
         let container = ModelContainerFactory.makePersistentContainer()
-        let transport = URLSessionTransport()
         let cacheStore = SwiftDataAttentionCacheStore(container: container)
+        let cliExecutor = LocalGitHubCLIExecutor()
         let appController = AppController(
-            configuration: AppConfiguration(),
-            oauth: GitHubOAuthClient(transport: transport),
-            tokenStore: KeychainTokenStore(),
-            github: GitHubAPIClient(transport: transport),
+            github: GitHubCLIClient(executor: cliExecutor),
             cache: cacheStore,
             launchAtLogin: LaunchAtLoginController()
         )

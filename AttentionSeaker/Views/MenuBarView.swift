@@ -81,20 +81,21 @@ struct MenuBarView: View {
             centeredState(icon: nil, title: "Checking GitHub…", detail: nil, showsProgress: true)
         } else {
             switch controller.authenticationState {
-            case .notConfigured:
+            case .checking:
+                centeredState(
+                    icon: nil,
+                    title: "Checking GitHub CLI…",
+                    detail: nil,
+                    showsProgress: true
+                )
+            case .cliUnavailable:
                 centeredState(
                     icon: "gear.badge.xmark",
-                    title: "OAuth client ID required",
-                    detail: "Set GITHUB_OAUTH_CLIENT_ID in the app target before connecting GitHub."
+                    title: "GitHub CLI required",
+                    detail: "Install gh locally, authenticate it, then check again in Settings."
                 )
             case .signedOut, .failed:
                 signedOutState
-            case .authorizing(let authorization):
-                centeredState(
-                    icon: "person.badge.clock",
-                    title: "Finish connecting GitHub",
-                    detail: "Enter \(authorization.userCode) on GitHub."
-                )
             case .signedIn:
                 centeredState(
                     icon: "checkmark.circle",
@@ -109,10 +110,10 @@ struct MenuBarView: View {
         VStack(spacing: 14) {
             centeredState(
                 icon: "person.crop.circle.badge.plus",
-                title: "Connect GitHub",
+                title: "Authenticate GitHub CLI",
                 detail: controller.cachedAccountLogin == nil
-                    ? "Sign in to load issues and pull requests that need your attention."
-                    : "Reconnect to update the cached feed for @\(controller.cachedAccountLogin ?? "your account")."
+                    ? "Run gh auth login, then check again in Settings."
+                    : "Authenticate gh to update the cached feed for @\(controller.cachedAccountLogin ?? "your account")."
             )
             SettingsLink {
                 Text("Open Settings")

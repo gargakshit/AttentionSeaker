@@ -1,34 +1,39 @@
 import Foundation
 
 protocol GitHubAttentionFetching {
-    func viewerLogin(token: String) async throws -> String
-    func fetchAttention(for expectedLogin: String, token: String) async throws -> AttentionSnapshot
+    var executableURL: URL? { get }
+    func viewerLogin() async throws -> String
+    func fetchAttention(for expectedLogin: String) async throws -> AttentionSnapshot
 }
 
 @MainActor
-final class GitHubAPIClient: GitHubAttentionFetching {
+final class GitHubCLIClient: GitHubAttentionFetching {
     static let pageSize = 100
     static let maximumItemsPerReason = 1_000
 
-    private let transport: HTTPTransporting
+    private let executor: GitHubCLIExecuting
     private let decoder: JSONDecoder
 
-    init(transport: HTTPTransporting) {
-        self.transport = transport
+    init(executor: GitHubCLIExecuting) {
+        self.executor = executor
         decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
     }
 
-    func viewerLogin(token: String) async throws -> String {
+    var executableURL: URL? {
+        executor.executableURL
+    }
+
+    func viewerLogin() async throws -> String {
         let request = GraphQLRequest(
             query: "query { viewer { login } }",
             variables: [:]
         )
-        let response: GraphQLResponse<ViewerData> = try await execute(request, token: token)
+        let response: GraphQLResponse<ViewerData> = try await execute(request)
         return try requireData(response).viewer.login
     }
 
-    func fetchAttention(for expectedLogin: String, token: String) async throws -> AttentionSnapshot {
+    func fetchAttention(for expectedLogin: String) async throws -> AttentionSnapshot {
         let descriptors = AttentionSearchDescriptor.all(for: expectedLogin)
         let variables = Dictionary(
             uniqueKeysWithValues: descriptors.enumerated().map { index, descriptor in
@@ -36,11 +41,11 @@ final class GitHubAPIClient: GitHubAttentionFetching {
             }
         )
         let request = GraphQLRequest(query: Self.initialQuery, variables: variables)
-        let response: GraphQLResponse<InitialSearchData> = try await execute(request, token: token)
+        let response: GraphQLResponse<InitialSearchData> = try await execute(request)
         let initial = try requireData(response)
 
         guard initial.viewer.login.caseInsensitiveCompare(expectedLogin) == .orderedSame else {
-            throw GitHubAPIError.accountChanged(expected: expectedLogin, actual: initial.viewer.login)
+            throw GitHubCLIError.accountChanged(expected: expectedLogin, actual: initial.viewer.login)
         }
 
         let initialConnections = [
@@ -66,10 +71,10 @@ final class GitHubAPIClient: GitHubAttentionFetching {
 
             while connection.pageInfo.hasNextPage && nodes.count < Self.maximumItemsPerReason {
                 guard let cursor = connection.pageInfo.endCursor else {
-                    throw GitHubAPIError.invalidPagination
+                    throw GitHubCLIError.invalidPagination
                 }
 
-                let page = try await fetchPage(query: descriptor.query, cursor: cursor, token: token)
+                let page = try await fetchPage(query: descriptor.query, cursor: cursor)
                 connection = page.search
                 latestRateLimit = RateLimitInfo(
                     remaining: page.rateLimit.remaining,
@@ -96,9 +101,8 @@ final class GitHubAPIClient: GitHubAttentionFetching {
             }
         }
 
-        let records = recordsByID.values.sorted(by: Self.stableAttentionSort)
         return AttentionSnapshot(
-            records: records,
+            records: recordsByID.values.sorted(by: Self.stableAttentionSort),
             accountLogin: initial.viewer.login,
             fetchedAt: Date(),
             truncatedReasons: truncatedReasons,
@@ -117,62 +121,61 @@ final class GitHubAPIClient: GitHubAttentionFetching {
         return lhs.number < rhs.number
     }
 
-    private func fetchPage(query: String, cursor: String, token: String) async throws -> PageSearchData {
+    private func fetchPage(query: String, cursor: String) async throws -> PageSearchData {
         let request = GraphQLRequest(
             query: Self.pageQuery,
             variables: ["query": query, "cursor": cursor]
         )
-        let response: GraphQLResponse<PageSearchData> = try await execute(request, token: token)
+        let response: GraphQLResponse<PageSearchData> = try await execute(request)
         return try requireData(response)
     }
 
-    private func execute<T: Decodable>(
-        _ graphQLRequest: GraphQLRequest,
-        token: String
-    ) async throws -> GraphQLResponse<T> {
-        var request = URLRequest(url: URL(string: "https://api.github.com/graphql")!)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
-        request.httpBody = try JSONEncoder().encode(graphQLRequest)
+    private func execute<T: Decodable>(_ request: GraphQLRequest) async throws -> GraphQLResponse<T> {
+        let input = try JSONEncoder().encode(request)
+        let result = try await executor.run(
+            arguments: ["api", "graphql", "--input", "-"],
+            standardInput: input
+        )
 
-        let (data, response) = try await transport.data(for: request)
-        switch response.statusCode {
-        case 200:
-            break
-        case 401:
-            throw GitHubAPIError.unauthorized
-        case 403, 429:
-            let resetAt = response.value(forHTTPHeaderField: "x-ratelimit-reset")
-                .flatMap(TimeInterval.init)
-                .map(Date.init(timeIntervalSince1970:))
-            throw GitHubAPIError.rateLimited(resetAt: resetAt)
-        default:
-            throw GitHubAPIError.httpStatus(response.statusCode)
+        guard result.terminationStatus == 0 else {
+            throw classifyFailure(result)
         }
 
         do {
-            return try decoder.decode(GraphQLResponse<T>.self, from: data)
+            return try decoder.decode(GraphQLResponse<T>.self, from: result.standardOutput)
         } catch {
-            throw GitHubAPIError.invalidResponse
+            throw GitHubCLIError.invalidResponse
         }
+    }
+
+    private func classifyFailure(_ result: GitHubCLIResult) -> GitHubCLIError {
+        let output = String(data: result.standardOutput, encoding: .utf8) ?? ""
+        let message = (result.standardError + "\n" + output).lowercased()
+        if message.contains("auth login")
+            || message.contains("not logged")
+            || message.contains("bad credentials")
+            || message.contains("authentication token")
+            || message.contains("http 401") {
+            return .notAuthenticated
+        }
+        if message.contains("rate limit") || message.contains("http 429") {
+            return .rateLimited(resetAt: nil)
+        }
+        return .commandFailed(status: result.terminationStatus)
     }
 
     private func requireData<T>(_ response: GraphQLResponse<T>) throws -> T {
         if let errors = response.errors, !errors.isEmpty {
-            throw GitHubAPIError.graphQL(errors.map(\.message).joined(separator: "\n"))
+            let message = errors.map(\.message).joined(separator: "\n")
+            if message.localizedCaseInsensitiveContains("rate limit") {
+                throw GitHubCLIError.rateLimited(resetAt: nil)
+            }
+            throw GitHubCLIError.graphQL(message)
         }
         guard let data = response.data else {
-            throw GitHubAPIError.invalidResponse
+            throw GitHubCLIError.invalidResponse
         }
         return data
-    }
-
-    private static var userAgent: String {
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
-        return "AttentionSeaker/\(version)"
     }
 
     private static let nodeFields = """
@@ -226,10 +229,11 @@ final class GitHubAPIClient: GitHubAttentionFetching {
         """
 }
 
-enum GitHubAPIError: LocalizedError, Equatable {
-    case unauthorized
+enum GitHubCLIError: LocalizedError, Equatable {
+    case executableNotFound
+    case notAuthenticated
+    case commandFailed(status: Int32)
     case rateLimited(resetAt: Date?)
-    case httpStatus(Int)
     case graphQL(String)
     case invalidResponse
     case invalidPagination
@@ -238,19 +242,21 @@ enum GitHubAPIError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
-        case .unauthorized:
-            return "Your GitHub authorization is no longer valid. Connect GitHub again."
+        case .executableNotFound:
+            return "GitHub CLI was not found. Install gh with Homebrew, then try again."
+        case .notAuthenticated:
+            return "GitHub CLI is not authenticated. Run gh auth login, then try again."
+        case .commandFailed(let status):
+            return "GitHub CLI exited with status \(status)."
         case .rateLimited(let resetAt):
             if let resetAt {
                 return "GitHub's API rate limit was reached. It resets \(resetAt.formatted(.relative(presentation: .named)))."
             }
             return "GitHub's API rate limit was reached."
-        case .httpStatus(let status):
-            return "GitHub returned HTTP status \(status)."
         case .graphQL(let message):
             return message
         case .invalidResponse:
-            return "GitHub returned data the app could not read."
+            return "GitHub CLI returned data the app could not read."
         case .invalidPagination:
             return "GitHub returned an invalid pagination cursor."
         case .unexpectedNodeType(let type):
@@ -349,10 +355,10 @@ private struct SearchNode: Decodable {
         case "PullRequest":
             kind = .pullRequest
         default:
-            throw GitHubAPIError.unexpectedNodeType(typeName)
+            throw GitHubCLIError.unexpectedNodeType(typeName)
         }
         guard kind == expectedKind else {
-            throw GitHubAPIError.unexpectedNodeType(typeName)
+            throw GitHubCLIError.unexpectedNodeType(typeName)
         }
 
         return AttentionRecord(
@@ -378,4 +384,3 @@ private struct SearchAuthor: Decodable {
 private struct SearchRepository: Decodable {
     let nameWithOwner: String
 }
-
