@@ -20,6 +20,12 @@ enum RefreshState: Equatable {
 @Observable
 final class AppController {
     private static let refreshIntervalKey = "refreshIntervalMinutes"
+    private static let issueNotificationReasonsKey = "issueNotificationReasons"
+    private static let pullRequestNotificationReasonsKey = "pullRequestNotificationReasons"
+    private static let pendingIssueNotificationBaselineKey =
+        "pendingIssueNotificationBaselineReasons"
+    private static let pendingPullRequestNotificationBaselineKey =
+        "pendingPullRequestNotificationBaselineReasons"
 
     private(set) var authenticationState: AuthenticationState = .checking
     private(set) var refreshState: RefreshState = .idle
@@ -29,21 +35,28 @@ final class AppController {
     private(set) var launchAtLoginStatus: LaunchAtLoginStatus
     private(set) var cachedAccountLogin: String?
     private(set) var rateLimit: RateLimitInfo?
+    private(set) var notificationPreferences: AttentionNotificationPreferences
+    private(set) var notificationAuthorizationState: NotificationAuthorizationState = .notDetermined
+    private(set) var notificationErrorMessage: String?
+    private(set) var isRequestingNotificationAuthorization = false
 
     @ObservationIgnored private let github: GitHubAttentionFetching
     @ObservationIgnored private let cache: AttentionCacheStoring
     @ObservationIgnored private let launchAtLogin: LaunchAtLoginControlling
+    @ObservationIgnored private let notifications: AttentionNotificationSending
     @ObservationIgnored private let userDefaults: UserDefaults
     @ObservationIgnored private let schedulerSleep: (TimeInterval) async throws -> Void
 
     @ObservationIgnored private var schedulerTask: Task<Void, Never>?
     @ObservationIgnored private var accountGeneration = 0
     @ObservationIgnored private var hasStarted = false
+    @ObservationIgnored private var pendingNotificationBaseline: AttentionNotificationPreferences
 
     init(
         github: GitHubAttentionFetching,
         cache: AttentionCacheStoring,
         launchAtLogin: LaunchAtLoginControlling,
+        notifications: AttentionNotificationSending,
         userDefaults: UserDefaults = .standard,
         schedulerSleep: @escaping (TimeInterval) async throws -> Void = { interval in
             try await Task.sleep(for: .seconds(interval))
@@ -52,17 +65,46 @@ final class AppController {
         self.github = github
         self.cache = cache
         self.launchAtLogin = launchAtLogin
+        self.notifications = notifications
         self.userDefaults = userDefaults
         self.schedulerSleep = schedulerSleep
 
         let storedInterval = userDefaults.object(forKey: Self.refreshIntervalKey) as? Int ?? 5
         refreshIntervalMinutes = Self.validatedRefreshInterval(storedInterval)
+        notificationPreferences = AttentionNotificationPreferences(
+            issueReasons: AttentionReason(
+                rawValue: userDefaults.integer(forKey: Self.issueNotificationReasonsKey)
+            ),
+            pullRequestReasons: AttentionReason(
+                rawValue: userDefaults.integer(forKey: Self.pullRequestNotificationReasonsKey)
+            )
+        )
+        pendingNotificationBaseline = AttentionNotificationPreferences(
+            issueReasons: AttentionReason(
+                rawValue: userDefaults.integer(
+                    forKey: Self.pendingIssueNotificationBaselineKey
+                )
+            ),
+            pullRequestReasons: AttentionReason(
+                rawValue: userDefaults.integer(
+                    forKey: Self.pendingPullRequestNotificationBaselineKey
+                )
+            )
+        )
         launchAtLoginStatus = launchAtLogin.status
 
         if let metadata = try? cache.loadMetadata() {
             cachedAccountLogin = metadata.accountLogin
             lastSuccessfulRefreshAt = metadata.lastSuccessfulRefreshAt
             truncatedReasons = metadata.truncatedReasons
+        } else {
+            pendingNotificationBaseline.issueReasons.formUnion(
+                notificationPreferences.issueReasons
+            )
+            pendingNotificationBaseline.pullRequestReasons.formUnion(
+                notificationPreferences.pullRequestReasons
+            )
+            persistPendingNotificationBaseline()
         }
     }
 
@@ -97,6 +139,7 @@ final class AppController {
         guard !hasStarted else { return }
         hasStarted = true
         launchAtLoginStatus = launchAtLogin.status
+        await refreshNotificationAuthorizationState()
         await recheckGitHub()
         startScheduler()
     }
@@ -117,6 +160,7 @@ final class AppController {
                cachedAccountLogin.caseInsensitiveCompare(login) != .orderedSame {
                 try cache.clear()
                 resetCacheMetadata()
+                scheduleNotificationBaseline(for: notificationPreferences)
             }
             authenticationState = .signedIn(login: login)
             await refresh()
@@ -138,6 +182,7 @@ final class AppController {
         do {
             try cache.clear()
             resetCacheMetadata()
+            scheduleNotificationBaseline(for: notificationPreferences)
         } catch {
             message = error.localizedDescription
         }
@@ -161,6 +206,8 @@ final class AppController {
             truncatedReasons = snapshot.truncatedReasons
             rateLimit = snapshot.rateLimit
             refreshState = .idle
+            guard applyPendingNotificationBaseline() else { return }
+            await deliverNotificationsIfNeeded()
         } catch GitHubCLIError.notAuthenticated {
             guard refreshGeneration == accountGeneration else { return }
             accountGeneration &+= 1
@@ -189,6 +236,54 @@ final class AppController {
 
     static func validatedRefreshInterval(_ minutes: Int) -> Int {
         min(max(minutes, 5), 1_440)
+    }
+
+    func isNotificationEnabled(kind: AttentionKind, reason: AttentionReason) -> Bool {
+        notificationPreferences.isEnabled(kind: kind, reason: reason)
+    }
+
+    func setNotificationEnabled(
+        _ enabled: Bool,
+        kind: AttentionKind,
+        reason: AttentionReason
+    ) {
+        let wasEnabled = notificationPreferences.isEnabled(kind: kind, reason: reason)
+        guard enabled != wasEnabled else { return }
+
+        notificationPreferences.setEnabled(enabled, kind: kind, reason: reason)
+        persistNotificationPreferences()
+
+        pendingNotificationBaseline.setEnabled(enabled, kind: kind, reason: reason)
+        persistPendingNotificationBaseline()
+
+        if enabled, !isRefreshing, lastSuccessfulRefreshAt != nil {
+            _ = applyPendingNotificationBaseline()
+        }
+    }
+
+    func requestNotificationAuthorization() async {
+        guard !isRequestingNotificationAuthorization else { return }
+        isRequestingNotificationAuthorization = true
+        defer { isRequestingNotificationAuthorization = false }
+
+        do {
+            if await notifications.authorizationState() == .notDetermined {
+                _ = try await notifications.requestAuthorization()
+            }
+            notificationErrorMessage = nil
+            await refreshNotificationAuthorizationState()
+        } catch {
+            notificationErrorMessage = error.localizedDescription
+            await refreshNotificationAuthorizationState()
+        }
+    }
+
+    func refreshNotificationAuthorizationState() async {
+        notificationAuthorizationState = await notifications.authorizationState()
+    }
+
+    func openNotificationSettings() {
+        notifications.openSystemSettings()
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {
@@ -228,6 +323,70 @@ final class AppController {
         lastSuccessfulRefreshAt = nil
         truncatedReasons = []
         rateLimit = nil
+    }
+
+    private func deliverNotificationsIfNeeded() async {
+        guard !notificationPreferences.isEmpty else { return }
+
+        await refreshNotificationAuthorizationState()
+        guard notificationAuthorizationState == .authorized else { return }
+
+        do {
+            let candidates = try cache.takeNotificationCandidates(
+                matching: notificationPreferences
+            )
+            guard !candidates.isEmpty else { return }
+            try await notifications.send(candidates)
+            notificationErrorMessage = nil
+        } catch {
+            notificationErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func scheduleNotificationBaseline(
+        for preferences: AttentionNotificationPreferences
+    ) {
+        pendingNotificationBaseline.issueReasons.formUnion(preferences.issueReasons)
+        pendingNotificationBaseline.pullRequestReasons.formUnion(preferences.pullRequestReasons)
+        persistPendingNotificationBaseline()
+    }
+
+    @discardableResult
+    private func applyPendingNotificationBaseline() -> Bool {
+        guard !pendingNotificationBaseline.isEmpty else { return true }
+
+        do {
+            try cache.establishNotificationBaseline(matching: pendingNotificationBaseline)
+            pendingNotificationBaseline = .none
+            persistPendingNotificationBaseline()
+            notificationErrorMessage = nil
+            return true
+        } catch {
+            notificationErrorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    private func persistNotificationPreferences() {
+        userDefaults.set(
+            notificationPreferences.issueReasons.rawValue,
+            forKey: Self.issueNotificationReasonsKey
+        )
+        userDefaults.set(
+            notificationPreferences.pullRequestReasons.rawValue,
+            forKey: Self.pullRequestNotificationReasonsKey
+        )
+    }
+
+    private func persistPendingNotificationBaseline() {
+        userDefaults.set(
+            pendingNotificationBaseline.issueReasons.rawValue,
+            forKey: Self.pendingIssueNotificationBaselineKey
+        )
+        userDefaults.set(
+            pendingNotificationBaseline.pullRequestReasons.rawValue,
+            forKey: Self.pendingPullRequestNotificationBaselineKey
+        )
     }
 
     private func startScheduler() {

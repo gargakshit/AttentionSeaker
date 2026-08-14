@@ -13,7 +13,8 @@ struct AttentionSeakerApp: App {
         let appController = AppController(
             github: GitHubCLIClient(executor: cliExecutor),
             cache: cacheStore,
-            launchAtLogin: LaunchAtLoginController()
+            launchAtLogin: LaunchAtLoginController(),
+            notifications: UserNotificationController()
         )
         modelContainer = container
         _controller = State(initialValue: appController)

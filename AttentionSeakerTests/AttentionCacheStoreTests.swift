@@ -76,4 +76,93 @@ struct AttentionCacheStoreTests {
         #expect(items.first?.reasons == .assigned)
         #expect(metadata?.accountLogin == "octocat")
     }
+
+    @Test
+    func notificationCandidatesAreClaimedOnlyOncePerItem() throws {
+        let container = try ModelContainerFactory.makeInMemoryContainer()
+        let store = SwiftDataAttentionCacheStore(container: container)
+        let record = AttentionRecord.stub(id: "assigned-issue", reasons: .assigned)
+        let preferences = AttentionNotificationPreferences(
+            issueReasons: .assigned,
+            pullRequestReasons: []
+        )
+        try store.replace(with: .stub(records: [record]))
+
+        let first = try store.takeNotificationCandidates(matching: preferences)
+        let second = try store.takeNotificationCandidates(matching: preferences)
+        try store.replace(with: .stub(records: [record]))
+        let afterUpdate = try store.takeNotificationCandidates(matching: preferences)
+
+        #expect(first.map(\.nodeID) == ["assigned-issue"])
+        #expect(second.isEmpty)
+        #expect(afterUpdate.isEmpty)
+        let item = try container.mainContext.fetch(FetchDescriptor<AttentionItem>()).first
+        #expect(item?.hasBeenNotified == true)
+    }
+
+    @Test
+    func notificationBaselineMarksCurrentItemsButLeavesFutureItemsEligible() throws {
+        let container = try ModelContainerFactory.makeInMemoryContainer()
+        let store = SwiftDataAttentionCacheStore(container: container)
+        let existing = AttentionRecord.stub(id: "existing", reasons: .assigned)
+        let preferences = AttentionNotificationPreferences(
+            issueReasons: .assigned,
+            pullRequestReasons: []
+        )
+        try store.replace(with: .stub(records: [existing]))
+
+        try store.establishNotificationBaseline(matching: preferences)
+        let future = AttentionRecord.stub(id: "future", number: 2, reasons: .assigned)
+        try store.replace(with: .stub(records: [existing, future]))
+        let candidates = try store.takeNotificationCandidates(matching: preferences)
+
+        #expect(candidates.map(\.nodeID) == ["future"])
+    }
+
+    @Test
+    func notificationCandidatesRespectKindSpecificReasons() throws {
+        let container = try ModelContainerFactory.makeInMemoryContainer()
+        let store = SwiftDataAttentionCacheStore(container: container)
+        let records = [
+            AttentionRecord.stub(id: "authored-issue", kind: .issue, reasons: .authored),
+            AttentionRecord.stub(id: "assigned-issue", kind: .issue, reasons: .assigned),
+            AttentionRecord.stub(
+                id: "review-pr",
+                kind: .pullRequest,
+                reasons: .reviewRequested
+            ),
+            AttentionRecord.stub(id: "assigned-pr", kind: .pullRequest, reasons: .assigned),
+        ]
+        try store.replace(with: .stub(records: records))
+        let preferences = AttentionNotificationPreferences(
+            issueReasons: .authored,
+            pullRequestReasons: .reviewRequested
+        )
+
+        let candidates = try store.takeNotificationCandidates(matching: preferences)
+
+        #expect(Set(candidates.map(\.nodeID)) == ["authored-issue", "review-pr"])
+    }
+
+    @Test
+    func notificationClaimSaveFailureRollsBackNotifiedState() throws {
+        let container = try ModelContainerFactory.makeInMemoryContainer()
+        let store = SwiftDataAttentionCacheStore(container: container)
+        try store.replace(with: .stub(records: [.stub(id: "issue", reasons: .mentioned)]))
+        let preferences = AttentionNotificationPreferences(
+            issueReasons: .mentioned,
+            pullRequestReasons: []
+        )
+        let failingStore = SwiftDataAttentionCacheStore(
+            container: container,
+            saveContext: { _ in throw StubError.expected }
+        )
+
+        #expect(throws: StubError.expected) {
+            try failingStore.takeNotificationCandidates(matching: preferences)
+        }
+
+        let candidates = try store.takeNotificationCandidates(matching: preferences)
+        #expect(candidates.map(\.nodeID) == ["issue"])
+    }
 }

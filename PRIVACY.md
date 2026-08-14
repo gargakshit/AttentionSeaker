@@ -8,13 +8,13 @@ AttentionSeaker invokes the GitHub CLI (`gh`) installed on your Mac and asks it 
 
 ## Local data
 
-The app stores issue and pull-request metadata in its sandboxed SwiftData cache so the last successful result remains visible while offline. It does not cache issue bodies, comment text, source code, pull-request files, or review content.
+The app stores issue and pull-request metadata in an app-local SwiftData cache so the last successful result remains visible while offline. It also stores a local flag recording whether an item has already produced a notification. It does not cache issue bodies, comment text, source code, pull-request files, or review content.
 
-The refresh interval is stored in app-local preferences. No app data is used for tracking.
+The refresh interval and selected notification types are stored in app-local preferences. Alerts are local macOS notifications; AttentionSeaker does not use a push-notification service or developer backend. No app data is used for tracking.
 
 ## Deletion
 
-Using **Clear Cached GitHub Data** deletes all locally cached GitHub metadata. It does not sign out or modify the authentication used by `gh`; use `gh auth logout` separately if desired.
+Using **Clear Cached GitHub Data** deletes all locally cached GitHub metadata, including notification-delivery flags. It does not sign out or modify the authentication used by `gh`; use `gh auth logout` separately if desired.
 
 ## Contact
 

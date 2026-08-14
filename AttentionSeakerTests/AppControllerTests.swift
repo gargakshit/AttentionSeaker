@@ -119,6 +119,156 @@ struct AppControllerTests {
     }
 
     @Test
+    func successfulRefreshSendsEachClaimedNotificationOnce() async {
+        let cache = StubCacheStore()
+        cache.metadata = CachedMetadata(
+            accountLogin: "octocat",
+            lastSuccessfulRefreshAt: Date(timeIntervalSince1970: 100),
+            truncatedReasons: []
+        )
+        let notifications = StubNotificationSender()
+        notifications.state = .authorized
+        let controller = makeController(cache: cache, notifications: notifications)
+        controller.setNotificationEnabled(true, kind: .issue, reason: .assigned)
+        cache.notificationCandidates = [
+            .stub(id: "issue", kind: .issue, reasons: .assigned),
+        ]
+
+        await controller.start()
+        await controller.refresh()
+
+        #expect(notifications.sentNotifications.map(\.nodeID) == ["issue"])
+        #expect(cache.notificationPreferences.count == 2)
+        #expect(cache.notificationBaselines.count == 1)
+    }
+
+    @Test
+    func enablingATypeCanRequestSystemAuthorization() async {
+        let notifications = StubNotificationSender()
+        notifications.state = .notDetermined
+        let controller = makeController(notifications: notifications)
+
+        controller.setNotificationEnabled(true, kind: .pullRequest, reason: .reviewRequested)
+        await controller.requestNotificationAuthorization()
+
+        #expect(controller.isNotificationEnabled(kind: .pullRequest, reason: .reviewRequested))
+        #expect(notifications.requestCount == 1)
+        #expect(controller.notificationAuthorizationState == .authorized)
+    }
+
+    @Test
+    func notificationSelectionsAndPendingBaselinePersist() async {
+        let suiteName = "AttentionSeakerTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let firstController = makeController(userDefaults: defaults)
+        firstController.setNotificationEnabled(true, kind: .issue, reason: .assigned)
+        firstController.setNotificationEnabled(true, kind: .pullRequest, reason: .reviewRequested)
+
+        let restoredCache = StubCacheStore()
+        restoredCache.notificationCandidates = [
+            .stub(id: "existing-issue", kind: .issue, reasons: .assigned),
+            .stub(id: "existing-pr", kind: .pullRequest, reasons: .reviewRequested),
+        ]
+        let notifications = StubNotificationSender()
+        notifications.state = .authorized
+        let restoredController = makeController(
+            cache: restoredCache,
+            notifications: notifications,
+            userDefaults: defaults
+        )
+        #expect(restoredController.isNotificationEnabled(kind: .issue, reason: .assigned))
+        #expect(!restoredController.isNotificationEnabled(kind: .pullRequest, reason: .assigned))
+        #expect(restoredController.isNotificationEnabled(
+            kind: .pullRequest,
+            reason: .reviewRequested
+        ))
+
+        await restoredController.start()
+
+        #expect(restoredCache.notificationBaselines.count == 1)
+        #expect(notifications.sentNotifications.isEmpty)
+    }
+
+    @Test
+    func enablingAReasonBaselinesTheCurrentSnapshotButNotFutureItems() async {
+        let cache = StubCacheStore()
+        cache.metadata = CachedMetadata(
+            accountLogin: "octocat",
+            lastSuccessfulRefreshAt: Date(timeIntervalSince1970: 100),
+            truncatedReasons: []
+        )
+        cache.notificationCandidates = [
+            .stub(id: "existing", kind: .issue, reasons: .mentioned),
+        ]
+        let notifications = StubNotificationSender()
+        notifications.state = .authorized
+        let controller = makeController(cache: cache, notifications: notifications)
+
+        controller.setNotificationEnabled(true, kind: .issue, reason: .mentioned)
+        await controller.start()
+        #expect(notifications.sentNotifications.isEmpty)
+
+        cache.notificationCandidates = [
+            .stub(id: "future", kind: .issue, reasons: .mentioned),
+        ]
+        await controller.refresh()
+
+        #expect(notifications.sentNotifications.map(\.nodeID) == ["future"])
+    }
+
+    @Test
+    func enablingDuringInitialSyncDefersTheBaselineUntilTheSnapshotArrives() async {
+        let github = StubGitHubClient()
+        github.suspendsFetch = true
+        let cache = StubCacheStore()
+        cache.notificationCandidates = [
+            .stub(id: "initial", kind: .pullRequest, reasons: .reviewRequested),
+        ]
+        let notifications = StubNotificationSender()
+        notifications.state = .authorized
+        let controller = makeController(
+            github: github,
+            cache: cache,
+            notifications: notifications
+        )
+
+        let startTask = Task { await controller.start() }
+        await waitUntil { github.fetchCount == 1 }
+        controller.setNotificationEnabled(true, kind: .pullRequest, reason: .reviewRequested)
+        #expect(cache.notificationBaselines.isEmpty)
+
+        github.resumeFetch()
+        await startTask.value
+
+        #expect(cache.notificationBaselines.count == 1)
+        #expect(notifications.sentNotifications.isEmpty)
+    }
+
+    @Test
+    func failedRefreshDoesNotClaimOrSendNotifications() async {
+        let github = StubGitHubClient()
+        github.fetchError = StubError.expected
+        let cache = StubCacheStore()
+        cache.notificationCandidates = [.stub(id: "issue", kind: .issue, reasons: .assigned)]
+        let notifications = StubNotificationSender()
+        notifications.state = .authorized
+        let controller = makeController(
+            github: github,
+            cache: cache,
+            notifications: notifications
+        )
+        controller.setNotificationEnabled(true, kind: .issue, reason: .assigned)
+
+        await controller.start()
+
+        #expect(cache.notificationPreferences.isEmpty)
+        #expect(notifications.sentNotifications.isEmpty)
+    }
+
+    @Test
     func overlappingRefreshesAreSingleFlight() async {
         let github = StubGitHubClient()
         github.suspendsFetch = true
@@ -172,17 +322,25 @@ struct AppControllerTests {
         github: StubGitHubClient? = nil,
         cache: StubCacheStore? = nil,
         launchAtLogin: StubLaunchAtLoginController? = nil,
+        notifications: StubNotificationSender? = nil,
+        userDefaults: UserDefaults? = nil,
         schedulerSleep: @escaping (TimeInterval) async throws -> Void = { interval in
             try await Task.sleep(for: .seconds(interval))
         }
     ) -> AppController {
-        let suiteName = "AttentionSeakerTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
+        let defaults: UserDefaults
+        if let userDefaults {
+            defaults = userDefaults
+        } else {
+            let suiteName = "AttentionSeakerTests.\(UUID().uuidString)"
+            defaults = UserDefaults(suiteName: suiteName)!
+            defaults.removePersistentDomain(forName: suiteName)
+        }
         return AppController(
             github: github ?? StubGitHubClient(),
             cache: cache ?? StubCacheStore(),
             launchAtLogin: launchAtLogin ?? StubLaunchAtLoginController(),
+            notifications: notifications ?? StubNotificationSender(),
             userDefaults: defaults,
             schedulerSleep: schedulerSleep
         )

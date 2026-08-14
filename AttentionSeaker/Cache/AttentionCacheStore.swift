@@ -5,6 +5,12 @@ import SwiftData
 protocol AttentionCacheStoring {
     func loadMetadata() throws -> CachedMetadata?
     func replace(with snapshot: AttentionSnapshot) throws
+    func establishNotificationBaseline(
+        matching preferences: AttentionNotificationPreferences
+    ) throws
+    func takeNotificationCandidates(
+        matching preferences: AttentionNotificationPreferences
+    ) throws -> [AttentionNotification]
     func clear() throws
 }
 
@@ -86,9 +92,71 @@ final class SwiftDataAttentionCacheStore: AttentionCacheStoring {
             metadata.accountLogin = snapshot.accountLogin
             metadata.lastSuccessfulRefreshAt = snapshot.fetchedAt
             metadata.truncatedReasonsRawValue = snapshot.truncatedReasons.rawValue
-            metadata.schemaVersion = 1
+            metadata.schemaVersion = 2
 
             try saveContext(context)
+        } catch {
+            context.rollback()
+            throw error
+        }
+    }
+
+    func establishNotificationBaseline(
+        matching preferences: AttentionNotificationPreferences
+    ) throws {
+        guard !preferences.isEmpty else { return }
+
+        do {
+            let items = try context.fetch(FetchDescriptor<AttentionItem>())
+            let matchingItems = items.filter { item in
+                !item.hasBeenNotified && !preferences.matchingReasons(
+                    kind: item.kind,
+                    itemReasons: item.reasons
+                ).isEmpty
+            }
+            guard !matchingItems.isEmpty else { return }
+
+            matchingItems.forEach { $0.hasBeenNotified = true }
+            try saveContext(context)
+        } catch {
+            context.rollback()
+            throw error
+        }
+    }
+
+    func takeNotificationCandidates(
+        matching preferences: AttentionNotificationPreferences
+    ) throws -> [AttentionNotification] {
+        guard !preferences.isEmpty else { return [] }
+
+        do {
+            let pairs: [(item: AttentionItem, notification: AttentionNotification)] = try context
+                .fetch(FetchDescriptor<AttentionItem>())
+                .compactMap { item -> (AttentionItem, AttentionNotification)? in
+                guard !item.hasBeenNotified else { return nil }
+                let matchingReasons = preferences.matchingReasons(
+                    kind: item.kind,
+                    itemReasons: item.reasons
+                )
+                guard !matchingReasons.isEmpty, let url = item.url else { return nil }
+
+                return (item, AttentionNotification(
+                        nodeID: item.nodeID,
+                        kind: item.kind,
+                        repositoryName: item.repositoryName,
+                        number: item.number,
+                        title: item.title,
+                        url: url,
+                        matchingReasons: matchingReasons
+                    ))
+            }
+
+            guard !pairs.isEmpty else { return [] }
+            pairs.forEach { pair in
+                pair.item.hasBeenNotified = true
+            }
+            try saveContext(context)
+            return pairs.map(\.notification)
         } catch {
             context.rollback()
             throw error

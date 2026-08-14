@@ -70,6 +70,7 @@ final class AttentionItem {
     var updatedAt: Date
     var isDraft: Bool
     var reasonsRawValue: Int
+    var hasBeenNotified: Bool = false
 
     init(record: AttentionRecord) {
         nodeID = record.nodeID
@@ -83,6 +84,7 @@ final class AttentionItem {
         updatedAt = record.updatedAt
         isDraft = record.isDraft
         reasonsRawValue = record.reasons.rawValue
+        hasBeenNotified = false
     }
 
     var kind: AttentionKind {
@@ -124,7 +126,7 @@ final class CacheMetadata {
         accountLogin: String,
         lastSuccessfulRefreshAt: Date,
         truncatedReasons: AttentionReason,
-        schemaVersion: Int = 1
+        schemaVersion: Int = 2
     ) {
         self.identifier = identifier
         self.accountLogin = accountLogin

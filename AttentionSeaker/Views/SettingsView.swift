@@ -8,11 +8,12 @@ struct SettingsView: View {
         Form {
             accountSection
             refreshSection
+            notificationSection
             startupSection
             aboutSection
         }
         .formStyle(.grouped)
-        .frame(width: 540, height: 560)
+        .frame(width: 560, height: 680)
         .task {
             await controller.start()
             controller.refreshLaunchAtLoginStatus()
@@ -149,6 +150,88 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private var notificationSection: some View {
+        Section("Notifications") {
+            notificationPermissionStatus
+
+            if let message = controller.notificationErrorMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            HStack(alignment: .top, spacing: 32) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Issues")
+                        .font(.headline)
+                    notificationToggle("Authored by me", kind: .issue, reason: .authored)
+                    notificationToggle("Mentions me", kind: .issue, reason: .mentioned)
+                    notificationToggle("Assigned to me", kind: .issue, reason: .assigned)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Pull Requests")
+                        .font(.headline)
+                    notificationToggle("Authored by me", kind: .pullRequest, reason: .authored)
+                    notificationToggle("Mentions me", kind: .pullRequest, reason: .mentioned)
+                    notificationToggle("Needs my review", kind: .pullRequest, reason: .reviewRequested)
+                    notificationToggle("Assigned to me", kind: .pullRequest, reason: .assigned)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var notificationPermissionStatus: some View {
+        switch controller.notificationAuthorizationState {
+        case .authorized:
+            Label("Notifications allowed", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        case .notDetermined:
+            HStack {
+                Text("Allow macOS notifications to receive selected alerts.")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Allow Notifications…") {
+                    Task { await controller.requestNotificationAuthorization() }
+                }
+                .disabled(controller.isRequestingNotificationAuthorization)
+            }
+        case .denied:
+            HStack {
+                Text("Notifications are disabled in System Settings.")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Open Notification Settings") {
+                    controller.openNotificationSettings()
+                }
+            }
+        }
+    }
+
+    private func notificationToggle(
+        _ title: String,
+        kind: AttentionKind,
+        reason: AttentionReason
+    ) -> some View {
+        Toggle(
+            title,
+            isOn: Binding(
+                get: { controller.isNotificationEnabled(kind: kind, reason: reason) },
+                set: { enabled in
+                    controller.setNotificationEnabled(enabled, kind: kind, reason: reason)
+                    if enabled {
+                        Task { await controller.requestNotificationAuthorization() }
+                    }
+                }
+            )
+        )
+        .toggleStyle(.checkbox)
     }
 
     private var aboutSection: some View {

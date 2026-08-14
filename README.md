@@ -2,6 +2,8 @@
 
 AttentionSeaker is a macOS 15+ menu-bar app that shows open GitHub issues and pull requests that you authored, are assigned to, were mentioned on in comments, or were requested to review. It uses your locally installed GitHub CLI for authentication and GraphQL access, and keeps only a last-good metadata snapshot in SwiftData.
 
+The Settings window provides separate notification checkboxes for issues and pull requests. Notifications are off by default. You can opt into authored, mentioned, and assigned items for either kind, plus review requests for pull requests. macOS permission is requested when you first enable a notification type. Enabling a type treats the current snapshot as its baseline, so existing items do not produce a burst of alerts; matching items that appear in later successful refreshes can notify once. An item still produces at most one notification when it matches several selected reasons.
+
 ## Configure GitHub CLI
 
 1. Install `gh`, for example with `brew install gh`.
