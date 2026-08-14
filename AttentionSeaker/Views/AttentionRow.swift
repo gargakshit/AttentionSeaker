@@ -29,6 +29,9 @@ struct AttentionRow: View {
                     if item.isDraft {
                         ReasonBadge(title: "Draft", color: .gray)
                     }
+                    if item.kind == .pullRequest && item.isApproved {
+                        ReasonBadge(title: "Approved", color: .green)
+                    }
                     ForEach(AttentionReason.displayOrder, id: \.title) { entry in
                         if item.reasons.contains(entry.reason) {
                             ReasonBadge(title: entry.title, color: color(for: entry.reason))

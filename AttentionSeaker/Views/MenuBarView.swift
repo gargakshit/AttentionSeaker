@@ -126,6 +126,11 @@ struct MenuBarView: View {
                         .buttonStyle(.plain)
                         .accessibilityHint("Opens on GitHub")
                         .contextMenu {
+                            Button("Open", systemImage: "arrow.up.forward.square") {
+                                if let url = item.url {
+                                    controller.open(url)
+                                }
+                            }
                             Button("Copy Link", systemImage: "doc.on.doc") {
                                 copyLink(item.urlString)
                             }

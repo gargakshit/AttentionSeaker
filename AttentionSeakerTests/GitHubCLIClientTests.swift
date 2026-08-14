@@ -21,6 +21,14 @@ struct GitHubCLIClientTests {
             GitHubCLIClient.nodeFields
                 .components(separatedBy: "timelineItems(last: 1) { updatedAt }").count - 1 == 2
         )
+        #expect(
+            GitHubCLIClient.nodeFields
+                .components(separatedBy: "reviewDecision").count - 1 == 1
+        )
+        let issueFragment = try #require(
+            GitHubCLIClient.nodeFields.components(separatedBy: "... on PullRequest {").first
+        )
+        #expect(!issueFragment.contains("reviewDecision"))
         #expect(!body.localizedCaseInsensitiveContains("access_token"))
         #expect(!body.localizedCaseInsensitiveContains("bearer"))
     }
@@ -41,6 +49,7 @@ struct GitHubCLIClientTests {
         #expect(snapshot.records[0].authorLogin == nil)
         #expect(snapshot.records[0].reasons == [.assigned, .mentioned])
         #expect(snapshot.accountLogin == "octocat")
+        #expect(!snapshot.records[0].isApproved)
         #expect(snapshot.records[0].lastActivityAt > snapshot.records[0].updatedAt)
     }
 
@@ -51,7 +60,8 @@ struct GitHubCLIClientTests {
             type: "PullRequest",
             number: 12,
             repository: "owner/repo",
-            author: nil
+            author: nil,
+            reviewDecision: "APPROVED"
         )
         pullRequest["isDraft"] = true
         let payload = initialPayload(connections: [
@@ -67,9 +77,58 @@ struct GitHubCLIClientTests {
         #expect(snapshot.records.count == 1)
         #expect(snapshot.records[0].kind == .pullRequest)
         #expect(snapshot.records[0].isDraft)
+        #expect(snapshot.records[0].isApproved)
         #expect(snapshot.records[0].authorLogin == nil)
         #expect(snapshot.records[0].reasons == [.reviewRequested, .mentioned])
         #expect(snapshot.records[0].lastActivityAt > snapshot.records[0].updatedAt)
+    }
+
+    @Test
+    func nonApprovedReviewDecisionsDecodeAsFalse() async throws {
+        let pullRequests = [
+            node(
+                id: "PR_changes",
+                type: "PullRequest",
+                number: 1,
+                repository: "owner/repo",
+                author: "author",
+                reviewDecision: "CHANGES_REQUESTED"
+            ),
+            node(
+                id: "PR_required",
+                type: "PullRequest",
+                number: 2,
+                repository: "owner/repo",
+                author: "author",
+                reviewDecision: "REVIEW_REQUIRED"
+            ),
+            node(
+                id: "PR_null",
+                type: "PullRequest",
+                number: 3,
+                repository: "owner/repo",
+                author: "author"
+            ),
+            node(
+                id: "PR_future",
+                type: "PullRequest",
+                number: 4,
+                repository: "owner/repo",
+                author: "author",
+                reviewDecision: "FUTURE_DECISION"
+            ),
+        ]
+        let payload = initialPayload(connections: [
+            "authoredPRs": connection(nodes: pullRequests, total: pullRequests.count),
+        ])
+        let client = GitHubCLIClient(
+            executor: StubGitHubCLIExecutor(results: [jsonResult(payload)])
+        )
+
+        let snapshot = try await client.fetchAttention(for: "octocat")
+
+        #expect(snapshot.records.count == 4)
+        #expect(snapshot.records.allSatisfy { !$0.isApproved })
     }
 
     @Test
@@ -105,6 +164,39 @@ struct GitHubCLIClientTests {
 
         #expect(snapshot.records.count == 1)
         #expect(snapshot.records[0].lastActivityAt == expectedDate)
+        #expect(snapshot.records[0].reasons == [.assigned, .mentioned])
+    }
+
+    @Test
+    func deduplicationPrefersTheLaterApprovalStateWhenActivityTimestampsMatch() async throws {
+        let awaitingReview = node(
+            id: "PR_1",
+            type: "PullRequest",
+            number: 7,
+            repository: "owner/repo",
+            author: "author",
+            reviewDecision: "REVIEW_REQUIRED"
+        )
+        let approved = node(
+            id: "PR_1",
+            type: "PullRequest",
+            number: 7,
+            repository: "owner/repo",
+            author: "author",
+            reviewDecision: "APPROVED"
+        )
+        let payload = initialPayload(connections: [
+            "assignedPRs": connection(nodes: [awaitingReview], total: 1),
+            "mentionedPRs": connection(nodes: [approved], total: 1),
+        ])
+        let client = GitHubCLIClient(
+            executor: StubGitHubCLIExecutor(results: [jsonResult(payload)])
+        )
+
+        let snapshot = try await client.fetchAttention(for: "octocat")
+
+        #expect(snapshot.records.count == 1)
+        #expect(snapshot.records[0].isApproved)
         #expect(snapshot.records[0].reasons == [.assigned, .mentioned])
     }
 
@@ -301,7 +393,8 @@ struct GitHubCLIClientTests {
         repository: String,
         author: String?,
         updatedAt: String = "2026-08-14T11:00:00Z",
-        lastActivityAt: String = "2026-08-14T11:30:00Z"
+        lastActivityAt: String = "2026-08-14T11:30:00Z",
+        reviewDecision: String? = nil
     ) -> [String: Any] {
         var value: [String: Any] = [
             "__typename": type,
@@ -317,6 +410,7 @@ struct GitHubCLIClientTests {
         value["author"] = author.map { ["login": $0] } ?? NSNull()
         if type == "PullRequest" {
             value["isDraft"] = false
+            value["reviewDecision"] = reviewDecision ?? NSNull()
         }
         return value
     }

@@ -36,7 +36,7 @@ struct AttentionCacheStoreTests {
         let insertedMetadata = try store.loadMetadata()
         #expect(insertedMetadata?.accountLogin == "octocat")
         let metadataModels = try container.mainContext.fetch(FetchDescriptor<CacheMetadata>())
-        #expect(metadataModels.first?.schemaVersion == 3)
+        #expect(metadataModels.first?.schemaVersion == 4)
     }
 
     @Test
@@ -117,6 +117,41 @@ struct AttentionCacheStoreTests {
         let item = try container.mainContext.fetch(FetchDescriptor<AttentionItem>()).first
         #expect(item?.hasBeenNotified == true)
         #expect(item?.lastActivityAt == laterActivity.lastActivityAt)
+    }
+
+    @Test
+    func approvalUpdatesWithoutResettingNotificationState() throws {
+        let container = try ModelContainerFactory.makeInMemoryContainer()
+        let store = SwiftDataAttentionCacheStore(container: container)
+        let pending = AttentionRecord.stub(
+            id: "pull-request",
+            kind: .pullRequest,
+            isApproved: false,
+            reasons: .reviewRequested
+        )
+        let preferences = AttentionNotificationPreferences(
+            issueReasons: [],
+            pullRequestReasons: .reviewRequested
+        )
+        try store.replace(with: .stub(records: [pending]))
+        #expect(try store.takeNotificationCandidates(matching: preferences).count == 1)
+
+        let approved = AttentionRecord.stub(
+            id: "pull-request",
+            kind: .pullRequest,
+            updatedAt: pending.updatedAt,
+            lastActivityAt: pending.lastActivityAt.addingTimeInterval(300),
+            isApproved: true,
+            reasons: .reviewRequested
+        )
+        try store.replace(with: .stub(records: [approved]))
+
+        let item = try #require(
+            container.mainContext.fetch(FetchDescriptor<AttentionItem>()).first
+        )
+        #expect(item.isApproved)
+        #expect(item.hasBeenNotified)
+        #expect(try store.takeNotificationCandidates(matching: preferences).isEmpty)
     }
 
     @Test

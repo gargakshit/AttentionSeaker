@@ -194,6 +194,7 @@ extension AttentionRecord {
         number: Int = 1,
         updatedAt: Date = Date(timeIntervalSince1970: 1_700_000_000),
         lastActivityAt: Date? = nil,
+        isApproved: Bool = false,
         reasons: AttentionReason = .assigned
     ) -> AttentionRecord {
         AttentionRecord(
@@ -208,6 +209,7 @@ extension AttentionRecord {
             updatedAt: updatedAt,
             lastActivityAt: lastActivityAt ?? updatedAt,
             isDraft: false,
+            isApproved: isApproved,
             reasons: reasons
         )
     }

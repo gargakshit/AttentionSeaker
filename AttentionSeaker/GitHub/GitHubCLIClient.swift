@@ -94,7 +94,7 @@ final class GitHubCLIClient: GitHubAttentionFetching {
                 let incoming = try node.record(reason: descriptor.reason, expectedKind: descriptor.kind)
                 if var existing = recordsByID[incoming.nodeID] {
                     let combinedReasons = existing.reasons.union(incoming.reasons)
-                    if incoming.lastActivityAt > existing.lastActivityAt {
+                    if incoming.lastActivityAt >= existing.lastActivityAt {
                         var newest = incoming
                         newest.reasons = combinedReasons
                         recordsByID[incoming.nodeID] = newest
@@ -209,6 +209,7 @@ final class GitHubCLIClient: GitHubAttentionFetching {
             updatedAt
             timelineItems(last: 1) { updatedAt }
             isDraft
+            reviewDecision
             repository { nameWithOwner }
           }
         }
@@ -342,6 +343,7 @@ private struct SearchNode: Decodable {
     let updatedAt: Date
     let timelineItems: TimelineSummary
     let isDraft: Bool?
+    let reviewDecision: String?
     let repository: SearchRepository
 
     enum CodingKeys: String, CodingKey {
@@ -355,6 +357,7 @@ private struct SearchNode: Decodable {
         case updatedAt
         case timelineItems
         case isDraft
+        case reviewDecision
         case repository
     }
 
@@ -384,6 +387,7 @@ private struct SearchNode: Decodable {
             updatedAt: updatedAt,
             lastActivityAt: timelineItems.updatedAt,
             isDraft: isDraft ?? false,
+            isApproved: kind == .pullRequest && reviewDecision == "APPROVED",
             reasons: reason
         )
     }
