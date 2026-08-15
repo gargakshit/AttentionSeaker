@@ -2,4 +2,5 @@
 DerivedData/
 *.xcuserstate
 xcuserdata/
-
+*.p12
+AuthKey_*.p8
