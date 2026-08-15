@@ -14,6 +14,7 @@ final class StubGitHubCLIExecutor: GitHubCLIExecuting {
     }
 
     var executableURL: URL?
+    var executableOverridePath: String?
     var results: [GitHubCLIResult]
     var error: Error?
     private(set) var invocations: [Invocation] = []
@@ -37,6 +38,7 @@ final class StubGitHubCLIExecutor: GitHubCLIExecuting {
 @MainActor
 final class StubGitHubClient: GitHubAttentionFetching {
     var executableURL: URL? = URL(fileURLWithPath: "/opt/homebrew/bin/gh")
+    var executableOverridePath: String?
     var login = "octocat"
     var snapshot: AttentionSnapshot
     var viewerError: Error?

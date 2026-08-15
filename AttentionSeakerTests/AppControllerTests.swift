@@ -119,6 +119,28 @@ struct AppControllerTests {
     }
 
     @Test
+    func launchAtLoginRequiresApprovalIsRegisteredButPending() {
+        let launch = StubLaunchAtLoginController()
+        launch.status = .requiresApproval
+        let controller = makeController(launchAtLogin: launch)
+
+        #expect(controller.isLaunchAtLoginEnabled)
+        #expect(controller.launchAtLoginStatus == .requiresApproval)
+    }
+
+    @Test
+    func launchAtLoginFailureIsShownWithoutChangingRefreshState() {
+        let launch = StubLaunchAtLoginController()
+        launch.error = StubError.expected
+        let controller = makeController(launchAtLogin: launch)
+
+        controller.setLaunchAtLogin(true)
+
+        #expect(controller.launchAtLoginErrorMessage != nil)
+        #expect(controller.refreshState == .idle)
+    }
+
+    @Test
     func successfulRefreshSendsEachClaimedNotificationOnce() async {
         let cache = StubCacheStore()
         cache.metadata = CachedMetadata(
@@ -316,6 +338,29 @@ struct AppControllerTests {
         await waitUntil { requestedSleeps.count == 2 }
 
         #expect(requestedSleeps == [300, 600])
+    }
+
+    @Test
+    func manualGitHubCLIPathPersistsAndRechecksTheAccount() async {
+        let suiteName = "AttentionSeakerTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let github = StubGitHubClient()
+        let controller = makeController(github: github, userDefaults: defaults)
+
+        await controller.setGitHubCLIOverridePath("  /custom/bin/gh  ")
+
+        #expect(controller.gitHubCLIOverridePath == "/custom/bin/gh")
+        #expect(github.executableOverridePath == "/custom/bin/gh")
+        #expect(defaults.string(forKey: "gitHubCLIOverridePath") == "/custom/bin/gh")
+        #expect(controller.authenticationState == .signedIn(login: "octocat"))
+
+        await controller.setGitHubCLIOverridePath(nil)
+
+        #expect(controller.gitHubCLIOverridePath == nil)
+        #expect(github.executableOverridePath == nil)
+        #expect(defaults.object(forKey: "gitHubCLIOverridePath") == nil)
     }
 
     private func makeController(

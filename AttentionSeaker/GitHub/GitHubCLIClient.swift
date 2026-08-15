@@ -1,7 +1,8 @@
 import Foundation
 
-protocol GitHubAttentionFetching {
+protocol GitHubAttentionFetching: AnyObject {
     var executableURL: URL? { get }
+    var executableOverridePath: String? { get set }
     func viewerLogin() async throws -> String
     func fetchAttention(for expectedLogin: String) async throws -> AttentionSnapshot
 }
@@ -22,6 +23,11 @@ final class GitHubCLIClient: GitHubAttentionFetching {
 
     var executableURL: URL? {
         executor.executableURL
+    }
+
+    var executableOverridePath: String? {
+        get { executor.executableOverridePath }
+        set { executor.executableOverridePath = newValue }
     }
 
     func viewerLogin() async throws -> String {

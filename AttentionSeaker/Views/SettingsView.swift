@@ -3,6 +3,8 @@ import SwiftUI
 
 struct SettingsView: View {
     @Environment(AppController.self) private var controller
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var gitHubCLIPathDraft = ""
 
     var body: some View {
         Form {
@@ -16,7 +18,13 @@ struct SettingsView: View {
         .frame(width: 560, height: 680)
         .task {
             await controller.start()
+            gitHubCLIPathDraft = controller.gitHubCLIPath ?? ""
             controller.refreshLaunchAtLoginStatus()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                controller.refreshLaunchAtLoginStatus()
+            }
         }
     }
 
@@ -57,9 +65,6 @@ struct SettingsView: View {
                 }
             case .signedIn(let login):
                 LabeledContent("GitHub account", value: "@\(login)")
-                if let path = controller.gitHubCLIPath {
-                    LabeledContent("GitHub CLI", value: path)
-                }
                 Text("Authentication is managed by your local gh installation. AttentionSeaker does not read or store its access token.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -83,6 +88,29 @@ struct SettingsView: View {
                     Button("Check Again") {
                         Task { await controller.recheckGitHub() }
                     }
+                }
+            }
+
+            gitHubCLIExecutablePicker
+        }
+    }
+
+    private var gitHubCLIExecutablePicker: some View {
+        Group {
+            LabeledContent("gh path") {
+                TextField("GitHub CLI path", text: $gitHubCLIPathDraft)
+                    .labelsHidden()
+                    .accessibilityLabel("GitHub CLI path")
+                    .onSubmit {
+                        applyGitHubCLIPath()
+                    }
+                    .textFieldStyle(.plain)
+                    .multilineTextAlignment(.trailing)
+            }
+            HStack {
+                Spacer()
+                Button("Apply") {
+                    applyGitHubCLIPath()
                 }
             }
         }
@@ -138,6 +166,12 @@ struct SettingsView: View {
             )
             .disabled(controller.launchAtLoginStatus == .unavailable)
 
+            if let message = controller.launchAtLoginErrorMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
             if controller.launchAtLoginStatus == .requiresApproval {
                 HStack {
                     Text("macOS requires approval in Login Items.")
@@ -148,6 +182,10 @@ struct SettingsView: View {
                         controller.openLoginItemsSettings()
                     }
                 }
+            } else if controller.launchAtLoginStatus == .unavailable {
+                Text("macOS couldn't find this app as a login item. Move AttentionSeaker to Applications, reopen it, and try again.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -251,6 +289,20 @@ struct SettingsView: View {
     private func copyLoginCommand() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString("gh auth login", forType: .string)
+    }
+
+    private func applyGitHubCLIPath() {
+        let path = gitHubCLIPathDraft
+        let trimmedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedPath == controller.gitHubCLIPath {
+            return
+        }
+        Task {
+            await controller.setGitHubCLIOverridePath(trimmedPath)
+            if controller.gitHubCLIPathErrorMessage == nil {
+                gitHubCLIPathDraft = controller.gitHubCLIPath ?? ""
+            }
+        }
     }
 
     private var versionDescription: String {

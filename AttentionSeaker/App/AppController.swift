@@ -20,6 +20,7 @@ enum RefreshState: Equatable {
 @Observable
 final class AppController {
     private static let refreshIntervalKey = "refreshIntervalMinutes"
+    private static let gitHubCLIOverridePathKey = "gitHubCLIOverridePath"
     private static let issueNotificationReasonsKey = "issueNotificationReasons"
     private static let pullRequestNotificationReasonsKey = "pullRequestNotificationReasons"
     private static let pendingIssueNotificationBaselineKey =
@@ -33,12 +34,15 @@ final class AppController {
     private(set) var truncatedReasons: AttentionReason = []
     private(set) var refreshIntervalMinutes: Int
     private(set) var launchAtLoginStatus: LaunchAtLoginStatus
+    private(set) var launchAtLoginErrorMessage: String?
     private(set) var cachedAccountLogin: String?
     private(set) var rateLimit: RateLimitInfo?
     private(set) var notificationPreferences: AttentionNotificationPreferences
     private(set) var notificationAuthorizationState: NotificationAuthorizationState = .notDetermined
     private(set) var notificationErrorMessage: String?
     private(set) var isRequestingNotificationAuthorization = false
+    private(set) var gitHubCLIOverridePath: String?
+    private(set) var gitHubCLIPathErrorMessage: String?
 
     @ObservationIgnored private let github: GitHubAttentionFetching
     @ObservationIgnored private let cache: AttentionCacheStoring
@@ -68,6 +72,15 @@ final class AppController {
         self.notifications = notifications
         self.userDefaults = userDefaults
         self.schedulerSleep = schedulerSleep
+
+        let storedCLIPath = Self.normalizedGitHubCLIPath(
+            userDefaults.string(forKey: Self.gitHubCLIOverridePathKey)
+        )
+        github.executableOverridePath = storedCLIPath
+        gitHubCLIOverridePath = storedCLIPath
+        if let storedCLIPath, github.executableURL == nil {
+            gitHubCLIPathErrorMessage = Self.invalidGitHubCLIPathMessage(storedCLIPath)
+        }
 
         let storedInterval = userDefaults.object(forKey: Self.refreshIntervalKey) as? Int ?? 5
         refreshIntervalMinutes = Self.validatedRefreshInterval(storedInterval)
@@ -128,11 +141,32 @@ final class AppController {
     }
 
     var isLaunchAtLoginEnabled: Bool {
-        launchAtLoginStatus == .enabled
+        launchAtLoginStatus == .enabled || launchAtLoginStatus == .requiresApproval
     }
 
     var gitHubCLIPath: String? {
         github.executableURL?.path
+    }
+
+    func setGitHubCLIOverridePath(_ path: String?) async {
+        let normalizedPath = Self.normalizedGitHubCLIPath(path)
+        let previousPath = github.executableOverridePath
+        github.executableOverridePath = normalizedPath
+
+        if let normalizedPath, github.executableURL == nil {
+            github.executableOverridePath = previousPath
+            gitHubCLIPathErrorMessage = Self.invalidGitHubCLIPathMessage(normalizedPath)
+            return
+        }
+
+        gitHubCLIOverridePath = normalizedPath
+        gitHubCLIPathErrorMessage = nil
+        if let normalizedPath {
+            userDefaults.set(normalizedPath, forKey: Self.gitHubCLIOverridePathKey)
+        } else {
+            userDefaults.removeObject(forKey: Self.gitHubCLIOverridePathKey)
+        }
+        await recheckGitHub()
     }
 
     func start() async {
@@ -238,6 +272,19 @@ final class AppController {
         min(max(minutes, 5), 1_440)
     }
 
+    private static func normalizedGitHubCLIPath(_ path: String?) -> String? {
+        guard let path else { return nil }
+        let trimmedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPath.isEmpty else { return nil }
+        let expandedPath = NSString(string: trimmedPath).expandingTildeInPath
+        guard expandedPath.hasPrefix("/") else { return expandedPath }
+        return URL(fileURLWithPath: expandedPath).standardizedFileURL.path
+    }
+
+    private static func invalidGitHubCLIPathMessage(_ path: String) -> String {
+        "\(path) is not an executable file. Choose the gh executable itself, or use automatic detection."
+    }
+
     func isNotificationEnabled(kind: AttentionKind, reason: AttentionReason) -> Bool {
         notificationPreferences.isEnabled(kind: kind, reason: reason)
     }
@@ -287,17 +334,21 @@ final class AppController {
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {
+        launchAtLoginErrorMessage = nil
         do {
             try launchAtLogin.setEnabled(enabled)
             launchAtLoginStatus = launchAtLogin.status
         } catch {
             launchAtLoginStatus = launchAtLogin.status
-            refreshState = .failed(message: error.localizedDescription)
+            launchAtLoginErrorMessage = error.localizedDescription
         }
     }
 
     func refreshLaunchAtLoginStatus() {
         launchAtLoginStatus = launchAtLogin.status
+        if launchAtLoginStatus == .enabled || launchAtLoginStatus == .disabled {
+            launchAtLoginErrorMessage = nil
+        }
     }
 
     func openLoginItemsSettings() {

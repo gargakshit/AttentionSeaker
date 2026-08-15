@@ -6,8 +6,9 @@ struct GitHubCLIResult: Equatable, Sendable {
     let terminationStatus: Int32
 }
 
-protocol GitHubCLIExecuting {
+protocol GitHubCLIExecuting: AnyObject {
     var executableURL: URL? { get }
+    var executableOverridePath: String? { get set }
     func run(arguments: [String], standardInput: Data?) async throws -> GitHubCLIResult
 }
 
@@ -15,16 +16,34 @@ protocol GitHubCLIExecuting {
 final class LocalGitHubCLIExecutor: GitHubCLIExecuting {
     private let fileManager: FileManager
     private let environment: [String: String]
+    var executableOverridePath: String?
 
     init(
         fileManager: FileManager = .default,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        executableOverridePath: String? = nil
     ) {
         self.fileManager = fileManager
         self.environment = environment
+        self.executableOverridePath = executableOverridePath
     }
 
     var executableURL: URL? {
+        if let executableOverridePath {
+            var isDirectory: ObjCBool = false
+            guard executableOverridePath.hasPrefix("/"),
+                  fileManager.fileExists(
+                    atPath: executableOverridePath,
+                    isDirectory: &isDirectory
+                  ),
+                  !isDirectory.boolValue,
+                  fileManager.isExecutableFile(atPath: executableOverridePath)
+            else {
+                return nil
+            }
+            return URL(fileURLWithPath: executableOverridePath)
+        }
+
         var candidatePaths: [String] = []
         if let path = environment["PATH"] {
             candidatePaths.append(contentsOf: path.split(separator: ":").map {
