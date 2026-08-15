@@ -20,12 +20,6 @@ jobs:
 
     env:
       DEVELOPMENT_TEAM: 2U27S7L7CX
-      ARCHIVE_PATH: ${{ runner.temp }}/AttentionSeaker.xcarchive
-      EXPORT_PATH: ${{ runner.temp }}/export
-      DERIVED_DATA_PATH: ${{ runner.temp }}/DerivedData
-      EXPORT_OPTIONS_PATH: ${{ runner.temp }}/ExportOptions.plist
-      NOTARIZATION_ZIP: ${{ runner.temp }}/AttentionSeaker-notarization.zip
-      RELEASE_DIRECTORY: ${{ runner.temp }}/release
 
     steps:
       - name: Check out the release tag
@@ -33,6 +27,18 @@ jobs:
 
       - name: Select Xcode 26.6
         run: sudo xcode-select --switch /Applications/Xcode_26.6.app
+
+      - name: Configure build paths
+        run: |
+          set -euo pipefail
+          {
+            echo "ARCHIVE_PATH=$RUNNER_TEMP/AttentionSeaker.xcarchive"
+            echo "EXPORT_PATH=$RUNNER_TEMP/export"
+            echo "DERIVED_DATA_PATH=$RUNNER_TEMP/DerivedData"
+            echo "EXPORT_OPTIONS_PATH=$RUNNER_TEMP/ExportOptions.plist"
+            echo "NOTARIZATION_ZIP=$RUNNER_TEMP/AttentionSeaker-notarization.zip"
+            echo "RELEASE_DIRECTORY=$RUNNER_TEMP/release"
+          } >> "$GITHUB_ENV"
 
       - name: Read and validate the version tag
         shell: bash
